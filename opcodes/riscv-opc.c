@@ -2654,6 +2654,13 @@ const struct riscv_opcode riscv_opcodes[] =
 
 {"pv.pack.h.h",		"Xgap9",   "d,s,t",	MATCH_V_OP_PACKH|MATCH_V_OP_H_VV,	MASK_V_OP,	match_opcode,	0},
 
+{"pv.unpack1.lo.h.b.s",	"Xgap9",   "d,s",	MATCH_V_OP_UNPACK1_LO_S|MATCH_V_OP_H_VV_S0,		MASK_V_OP2,	match_opcode,	0},
+{"pv.unpack1.lo.h.b.u",	"Xgap9",   "d,s",	MATCH_V_OP_UNPACK1_LO_U|MATCH_V_OP_H_VV_S0,		MASK_V_OP2,	match_opcode,	0},
+{"pv.unpack1.hi.h.b.s",	"Xgap9",   "d,s",	MATCH_V_OP_UNPACK1_HI_S|MATCH_V_OP_H_VV_S0,		MASK_V_OP2,	match_opcode,	0},
+{"pv.unpack1.hi.h.b.u",	"Xgap9",   "d,s",	MATCH_V_OP_UNPACK1_HI_U|MATCH_V_OP_H_VV_S0,		MASK_V_OP2,	match_opcode,	0},
+{"pv.unpack2.h.b.s",	"Xgap9",   "d,s,t",	MATCH_V_OP_UNPACK2_S|MATCH_V_OP_H_VV_S0,		MASK_V_OP11,	match_opcode,	0},
+{"pv.unpack2.h.b.u",	"Xgap9",   "d,s,t",	MATCH_V_OP_UNPACK2_U|MATCH_V_OP_H_VV_S0,		MASK_V_OP11,	match_opcode,	0},
+
 /* Bit reverse */
 
 {"p.bitrev",		"Xgap9",   "d,s,bi,b5",	MATCH_BITREV,				MASK_BITREV,	match_opcode,	0},
@@ -2967,6 +2974,8 @@ const struct riscv_opcode riscv_opcodes[] =
 {"p.msuu.d",   	"Xgap9", "d,s,t", 	MATCH_MSUU_D,  			MASK_PALU,  		match_opcode,	0},
 {"p.muls.d",   	"Xgap9", "d,s,t", 	MATCH_MULS_D,  			MASK_PALU,  		match_opcode,	0},
 {"p.mulu.d",   	"Xgap9", "d,s,t", 	MATCH_MULU_D,  			MASK_PALU,  		match_opcode,	0},
+{"p.mulh.d",    "Xgap9", "d,s,t", 	MATCH_MULH_D, 			MASK_PALU,  		match_opcode,	0},
+{"p.mulhu.d",   "Xgap9", "d,s,t", 	MATCH_MULHU_D, 			MASK_PALU,  		match_opcode,	0},
 
 /* OP_IMM Group */
 {"slli.d",   	"Xgap9", "d,s,>", 	MATCH_SLLI_D,  			MASK_PALU1,  		match_opcode,	0},

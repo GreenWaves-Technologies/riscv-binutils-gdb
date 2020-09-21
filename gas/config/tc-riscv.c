@@ -2927,6 +2927,45 @@ riscv_elf_final_processing (void)
   elf_elfheader (stdoutput)->e_flags |= elf_flags;
 }
 
+#define MAX_HWLOOP_DEPTH	10
+static char RvcStack[MAX_HWLOOP_DEPTH];
+static int RvcStackHead = 0;
+
+static void PushRvc(int V)
+
+{
+	if (RvcStackHead >= MAX_HWLOOP_DEPTH)
+		as_bad (_("Maximum loop depth exceeded: %d"), RvcStackHead);
+	RvcStack[RvcStackHead] = V;
+	RvcStackHead++;
+}
+
+static int PopRvc()
+
+{
+	RvcStackHead--;
+	if (RvcStackHead < 0) as_bad (_("Internal error in PopRvc, negative stack head: %d"), RvcStackHead);
+	return RvcStack[RvcStackHead];
+}
+
+static void
+s_riscv_enterHWloop(int DisableRvc)
+{
+  char *save_in = input_line_pointer;
+  demand_empty_rest_of_line ();
+  PushRvc(riscv_opts.rvc);
+  if (DisableRvc) riscv_opts.rvc = 0;
+  input_line_pointer = save_in;
+}
+
+static void
+s_riscv_exitHWloop(int Enter)
+{
+  char *save_in = input_line_pointer;
+  demand_empty_rest_of_line ();
+  riscv_opts.rvc = PopRvc();
+  input_line_pointer = save_in;
+}
 /* Parse the .sleb128 and .uleb128 pseudos.  Only allow constant expressions,
    since these directives break relaxation when used with symbol deltas.  */
 
@@ -2959,6 +2998,9 @@ static const pseudo_typeS riscv_pseudo_table[] =
   {"bss", s_bss, 0},
   {"uleb128", s_riscv_leb128, 0},
   {"sleb128", s_riscv_leb128, 1},
+  {"starthwloopnorvc", s_riscv_enterHWloop, 1},
+  {"starthwlooprvc", s_riscv_enterHWloop, 0},
+  {"stophwloop", s_riscv_exitHWloop, 0},
 
   { NULL, NULL, 0 },
 };

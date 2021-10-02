@@ -90,6 +90,8 @@ static struct riscv_set_options riscv_opts =
 
 static struct Pulp_Target_Chip Pulp_Chip = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1};
 
+static int WarnInsn = 0;
+
 static void pulp_set_chip(const char *arg);
 static void pulp_add_chip_info(void);
 
@@ -1385,6 +1387,7 @@ riscv_ip (char *str, struct riscv_cl_insn *ip, expressionS *imm_expr,
       if (!riscv_subset_supports (insn->subset))
 	continue;
 
+      if (WarnInsn && (insn->pinfo != INSN_MACRO) && (insn->pinfo & INSN_WARN)) as_warn("-mwinsn: Problematic insn %s\n", insn->name);
       create_insn (ip, insn);
       argnum = 1;
 
@@ -2045,6 +2048,7 @@ enum options
     OPTION_FC,
     OPTION_CPU,
     OPTION_CHIP,
+    OPTION_WARNINSN,
   OPTION_END_OF_ENUM
 };
 
@@ -2065,6 +2069,7 @@ struct option md_longopts[] =
   {"mFC", required_argument, NULL, OPTION_FC},
   {"mcpu", required_argument, NULL, OPTION_CPU},
   {"mchip", required_argument, NULL, OPTION_CHIP},
+  {"mwinsn", no_argument, NULL, OPTION_WARNINSN},
 
   {NULL, no_argument, NULL, 0}
 };
@@ -2154,6 +2159,9 @@ md_parse_option (int c, const char *arg)
       break;
     case OPTION_CHIP:
       pulp_set_chip(arg); Defined = 1;
+      break;
+    case OPTION_WARNINSN:
+      WarnInsn = 1;
       break;
 
     default:
@@ -2890,6 +2898,7 @@ RISC-V options:\n\
   -mPE=Value     define number of processing element in Pulp cluster\n\
   -mFC=Value     if Value=0 assume there is no fabric controler, if Value!=0 assume there is one FC\n\
   -mchip=Name    define targeted chip as Name\n\
+  -mwinsn        turn on warning on marked asm instructions\n\
 "));
 }
 

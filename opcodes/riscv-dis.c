@@ -48,6 +48,7 @@ static const char * const *riscv_fpr_names;
 
 /* Other options.  */
 static int no_aliases;	/* If set disassemble as most general inst.  */
+static int numeric; /* If set, disassemble numeric register names instead of ABI names.  */
 
 struct riscv_subset
 {
@@ -161,6 +162,7 @@ set_default_riscv_dis_options (void)
   riscv_gpr_names = riscv_gpr_names_abi;
   riscv_fpr_names = riscv_fpr_names_abi;
   no_aliases = 0;
+  numeric = 0;
 }
 
 static void
@@ -173,6 +175,7 @@ parse_riscv_dis_option (const char *option)
     {
       riscv_gpr_names = riscv_gpr_names_numeric;
       riscv_fpr_names = riscv_fpr_names_numeric;
+      numeric = 1;
     } else if ((where = strstr(option, "march="))&&(where==option)) {
         char *comma;
         where = option+6;
@@ -243,6 +246,74 @@ maybe_print_address (struct riscv_private_data *pd, int base_reg, int offset)
   else if (base_reg == X_TP || base_reg == 0)
     pd->print_addr = offset;
 }
+
+/* Get ZCMP rlist field. */
+
+static void
+print_rlist (disassemble_info *info, insn_t l)
+{
+  unsigned rlist = (int)EXTRACT_OPERAND (RLIST, l);
+  unsigned r_start = numeric ? X_S2 : X_S0;
+  info->fprintf_func (info->stream, "%s", riscv_gpr_names[X_RA]);
+
+  if (rlist == 5)
+    info->fprintf_func (info->stream, ",%s", riscv_gpr_names[X_S0]);
+  else if (rlist == 6 || (numeric && rlist > 6))
+    info->fprintf_func (info->stream, ",%s-%s",
+          riscv_gpr_names[X_S0],
+          riscv_gpr_names[X_S1]);
+
+  if (rlist == 15)
+    info->fprintf_func (info->stream, ",%s-%s",
+          riscv_gpr_names[r_start],
+          riscv_gpr_names[X_S11]);
+  else if (rlist == 7 && numeric)
+    info->fprintf_func (info->stream, ",%s",
+          riscv_gpr_names[X_S2]);
+  else if (rlist > 6)
+    info->fprintf_func (info->stream, ",%s-%s",
+          riscv_gpr_names[r_start],
+          riscv_gpr_names[rlist + 11]);
+}
+
+static int
+riscv_get_base_spimm (insn_t opcode, unsigned int xlen)
+{
+  unsigned sp_alignment = 16;
+  unsigned reg_size = (xlen) / 8;
+  unsigned rlist = EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST);
+
+  unsigned min_sp_adj = (rlist - 3) * reg_size + (rlist == 15 ? reg_size : 0);
+  return ((min_sp_adj / sp_alignment) + (min_sp_adj % sp_alignment != 0))
+          * sp_alignment;
+}
+
+/* Get ZCMP sp adjustment immediate. */
+
+static int
+riscv_get_spimm (insn_t l, disassemble_info *info)
+{
+   unsigned int xlen;
+   if (info->mach == bfd_mach_riscv64)
+     xlen = 64;
+   else if (info->mach == bfd_mach_riscv32)
+     xlen = 32;
+   else if (info->section != NULL)
+     {
+       Elf_Internal_Ehdr *ehdr = elf_elfheader (info->section->owner);
+       xlen = ehdr->e_ident[EI_CLASS] == ELFCLASS64 ? 64 : 32;
+     }
+
+  int spimm = riscv_get_base_spimm(l, xlen);
+
+  spimm += EXTRACT_ZCMP_SPIMM (l);
+
+  if (((l ^ MATCH_CM_PUSH) & MASK_CM_PUSH) == 0)
+    spimm *= -1;
+
+  return spimm;
+}
+
 
 /* Print insn arguments for 32/64-bit code.  */
 
@@ -341,6 +412,17 @@ print_insn_args (const char *d, insn_t l, bfd_vma pc, disassemble_info *info)
 	      print (info->stream, "%s",
 		     riscv_fpr_names[EXTRACT_OPERAND (CRS2S, l) + 8]);
 	      break;
+	    case 'Z': /* ZC 16 bits length instruction fields. */
+	       switch (*++d) {
+                  case 'r':
+                    print_rlist (info, l);
+                    break;
+                  case 'p':
+                    print (info->stream, "%d", riscv_get_spimm (l, info));
+                    break;
+                  default: break;
+
+	       }
 	    }
 	  break;
 
@@ -350,6 +432,8 @@ print_insn_args (const char *d, insn_t l, bfd_vma pc, disassemble_info *info)
 	case ')':
 	case '[':
 	case ']':
+	case '{':
+	case '}':
 	  print (info->stream, "%c", *d);
 	  break;
 
@@ -543,6 +627,16 @@ riscv_subset_supports (const char *feature)
   return FALSE;
 }
 
+static void riscv_subset_infos(const char *feature)
+
+{
+  	struct riscv_subset *s;
+	printf("Subset: ");
+  	for (s = riscv_subsets; s != NULL; s = s->next) printf("%s ", s->name);
+	printf("\n");
+	if (feature) printf("Feature: %s\n", feature);
+}
+
 /* Print the RISC-V instruction at address MEMADDR in debugged memory,
    on using INFO.  Returns length of the instruction, in bytes.
    BIGENDIAN must be 1 if this is big-endian code, 0 if
@@ -551,6 +645,7 @@ riscv_subset_supports (const char *feature)
 static int
 riscv_disassemble_insn (bfd_vma memaddr, insn_t word, disassemble_info *info)
 {
+  int Trace = 0;
   const struct riscv_opcode *op;
   static bfd_boolean init = 0;
   static const struct riscv_opcode *riscv_hash[OP_MASK_OP + 1];
@@ -564,8 +659,14 @@ riscv_disassemble_insn (bfd_vma memaddr, insn_t word, disassemble_info *info)
     {
       for (op = riscv_opcodes; op->name; op++)
         if (riscv_subset_supports (op->subset)) {
-	  if (!riscv_hash[OP_HASH_IDX (op->match)])
+	  if (Trace) printf("Adding %20s, Hash: %10d, Match: %8x; Mask: %8x", op->name, OP_HASH_IDX (op->match), op->match, op->mask);
+	  if (!riscv_hash[OP_HASH_IDX (op->match)]) {
 	    riscv_hash[OP_HASH_IDX (op->match)] = op;
+	    if (Trace) printf(" CREATED");
+	  } else {
+		  if (Trace) printf(" ADD");
+	  }
+	  if (Trace) printf("\n");
         }
 
       init = 1;
@@ -600,6 +701,11 @@ riscv_disassemble_insn (bfd_vma memaddr, insn_t word, disassemble_info *info)
   info->target = 0;
   info->target2 = 0;
 
+  if (Trace) {
+	printf("Word: %x, insnlen: %d, op: %s, Hash: %d\n", word, insnlen, (op)?"Yes":"No", OP_HASH_IDX (word));
+	riscv_subset_infos(0);
+  }
+
   op = riscv_hash[OP_HASH_IDX (word)];
   if (op != NULL)
     {
@@ -618,18 +724,30 @@ riscv_disassemble_insn (bfd_vma memaddr, insn_t word, disassemble_info *info)
 
       for (; op->name; op++)
 	{
-          if (!riscv_subset_supports (op->subset))
+	  if (Trace) printf("Trying: %s: ", op->name);
+          if (!riscv_subset_supports (op->subset)) {
+	    if (Trace) printf("NOT in SUBSET %s\n", op->subset);
             continue;
+	  }
 
 	  /* Does the opcode match?  */
-	  if (! (op->match_func) (op, word))
+	  if (! (op->match_func) (op, word)) {
+	    if (Trace) printf("NOT MATCHING (%x ^ %x) & %x = %x\n", word, op->match, op->mask, (word^op->match)&op->mask);
 	    continue;
+	  } else {
+	    if (Trace) printf("MATCHING (%x ^ %x) & %x = %x\n", word, op->match, op->mask, (word^op->match)&op->mask);
+	  }
 	  /* Is this a pseudo-instruction and may we print it as such?  */
-	  if (no_aliases && (op->pinfo & INSN_ALIAS))
+	  if (no_aliases && (op->pinfo & INSN_ALIAS)) {
+	    if (Trace) printf("NO ALIAS\n");
 	    continue;
+	  }
 	  /* Is this instruction restricted to a certain value of XLEN?  */
-	  if (isdigit (op->subset[0]) && atoi (op->subset) != xlen)
+	  if (isdigit (op->subset[0]) && atoi (op->subset) != xlen) {
+	    if (Trace) printf("WRONG XLEN\n");
 	    continue;
+	  }
+	  if (Trace) printf("MATCHING\n");
 
 	  /* It's a match.  */
 	  (*info->fprintf_func) (info->stream, "%s", op->name);

@@ -112,6 +112,9 @@ static const char * const riscv_pred_succ[16] =
 #define EXTRACT_I5_1_TYPE_IMM(x) \
   (RV_X(x, 20, 5))
 
+#define EXTRACT_ZCMP_SPIMM(x) \
+  (RV_X(x, 2, 2) << 4)
+
 #define ENCODE_ITYPE_IMM(x) \
   (RV_X(x, 0, 12) << 20)
 #define ENCODE_STYPE_IMM(x) \
@@ -160,6 +163,9 @@ static const char * const riscv_pred_succ[16] =
 #define ENCODE_I5_1_TYPE_IMM(x) \
   (RV_X(x, 0, 5) << 20)
 
+#define ENCODE_ZCMP_SPIMM(x) \
+  (RV_X(x, 4, 2) << 2)
+
 #define VALID_ITYPE_IMM(x) (EXTRACT_ITYPE_IMM(ENCODE_ITYPE_IMM(x)) == (x))
 #define VALID_STYPE_IMM(x) (EXTRACT_STYPE_IMM(ENCODE_STYPE_IMM(x)) == (x))
 #define VALID_SBTYPE_IMM(x) (EXTRACT_SBTYPE_IMM(ENCODE_SBTYPE_IMM(x)) == (x))
@@ -181,6 +187,8 @@ static const char * const riscv_pred_succ[16] =
 
 #define VALID_I1TYPE_UIMM(x) (EXTRACT_I1TYPE_UIMM(ENCODE_I1TYPE_UIMM(x)) == (x))
 #define VALID_I6TYPE_IMM(x) (EXTRACT_I6TYPE_IMM(ENCODE_I6TYPE_IMM(x)) == (x))
+
+#define VALID_ZCMP_SPIMM(x) (EXTRACT_ZCMP_SPIMM(ENCODE_ZCMP_SPIMM(x)) == (x))
 
 #define RISCV_RTYPE(insn, rd, rs1, rs2) \
   ((MATCH_ ## insn) | ((rd) << OP_SH_RD) | ((rs1) << OP_SH_RS1) | ((rs2) << OP_SH_RS2))
@@ -272,6 +280,14 @@ static const char * const riscv_pred_succ[16] =
 #define OP_MASK_CRS2S 0x7
 #define OP_SH_CRS2S 2
 
+/* ZC Specific */
+#define OP_MASK_RLIST           0xf
+#define OP_SH_RLIST             4
+#define OP_MASK_SREG1           0x7
+#define OP_SH_SREG1             7
+#define OP_MASK_SREG2           0x7
+#define OP_SH_SREG2             2
+
 /* ABI names for selected x-registers.  */
 
 #define X_RA 1
@@ -281,6 +297,14 @@ static const char * const riscv_pred_succ[16] =
 #define X_T0 5
 #define X_T1 6
 #define X_T2 7
+#define X_S0 8
+#define X_S1 9
+#define X_A0 10
+#define X_A1 11
+#define X_S2 18
+#define X_S7 23
+#define X_S10 26
+#define X_S11 27
 #define X_T3 28
 
 #define NGPR 32
@@ -300,6 +324,10 @@ static const char * const riscv_pred_succ[16] =
 /* Extract the operand given by FIELD from integer INSN.  */
 #define EXTRACT_OPERAND(FIELD, INSN) \
   EXTRACT_BITS ((INSN), OP_MASK_##FIELD, OP_SH_##FIELD)
+
+#define RISCV_SREG_0_7(REGNO) \
+  ((REGNO == X_S0 || REGNO == X_S1) \
+    || (REGNO >= X_S2 && REGNO <= X_S7))
 
 /* This structure holds information for a particular instruction.  */
 

@@ -493,6 +493,12 @@ const struct riscv_opcode riscv_opcodes[] =
 {"fcvt.s.lu", "64F", "D,s",  MATCH_FCVT_S_LU | MASK_RM, MASK_FCVT_S_L | MASK_RM, match_opcode, 0 },
 {"fcvt.s.lu", "64F", "D,s,m",  MATCH_FCVT_S_LU, MASK_FCVT_S_LU, match_opcode, 0 },
 
+/* PushM/PopM 16b, must be before compressed fsd fsdsp since it is reusing its encoding */
+{"cm.push",     "Xgap9", "{CZr},CZp",	MATCH_CM_PUSH, 			MASK_CM_PUSH, 		match_opcode, 0 },
+{"cm.pop",     	"Xgap9",  "{CZr},CZp",	MATCH_CM_POP,			MASK_CM_POP, 		match_opcode, 0 },
+{"cm.popret",  	"Xgap9",  "{CZr},CZp",	MATCH_CM_POPRET,		MASK_CM_POPRET, 	match_opcode, 0 },
+{"cm.popretz", 	"Xgap9",  "{CZr},CZp",	MATCH_CM_POPRETZ,		MASK_CM_POPRETZ,	match_opcode, 0 },
+
 /* Double-precision floating-point instruction subset */
 {"fld",       "C",   "D,Cn(Cc)",  MATCH_C_FLDSP, MASK_C_FLDSP, match_opcode, INSN_ALIAS },
 {"fld",       "C",   "CD,Cl(Cs)",  MATCH_C_FLD, MASK_C_FLD, match_opcode, INSN_ALIAS },
@@ -591,6 +597,8 @@ const struct riscv_opcode riscv_opcodes[] =
 {"c.sd",      "64C", "Ct,Cl(Cs)",  MATCH_C_SD, MASK_C_SD, match_opcode, 0 },
 {"c.fldsp",   "C",   "D,Cn(Cc)",  MATCH_C_FLDSP, MASK_C_FLDSP, match_opcode, 0 },
 {"c.fld",     "C",   "CD,Cl(Cs)",  MATCH_C_FLD, MASK_C_FLD, match_opcode, 0 },
+
+
 {"c.fsdsp",   "C",   "CT,CN(Cc)",  MATCH_C_FSDSP, MASK_C_FSDSP, match_opcode, 0 },
 {"c.fsd",     "C",   "CD,Cl(Cs)",  MATCH_C_FSD, MASK_C_FSD, match_opcode, 0 },
 {"c.flwsp",   "32C", "D,Cm(Cc)",  MATCH_C_FLWSP, MASK_C_FLWSP, match_opcode, 0 },
@@ -2990,8 +2998,8 @@ const struct riscv_opcode riscv_opcodes[] =
 {"ori.d",   	"Xgap9", "d,s,bI", 	MATCH_ORI_D,  			MASK_PALU1,  		match_opcode,	0},
 {"andi.d",   	"Xgap9", "d,s,bI", 	MATCH_ANDI_D,  			MASK_PALU1,  		match_opcode,	0},
 
-/* Alias */
 
+/* Alias */
 {"mv.d",	"Xgap9", "d,s",  	MATCH_ADDI_D, 			MASK_PALUS, 		match_opcode, INSN_ALIAS },
 {"sgt.d",	"Xgap9", "d,t,s",  	MATCH_SLT_D, 			MASK_PALU,		match_opcode, INSN_ALIAS },
 {"sgtu.d",	"Xgap9", "d,t,s",  	MATCH_SLTU_D, 			MASK_PALU,		match_opcode, INSN_ALIAS },
@@ -3000,6 +3008,8 @@ const struct riscv_opcode riscv_opcodes[] =
 {"snez.d",      "Xgap9", "d,t",		MATCH_SLTU_D, 			MASK_PALU | MASK_RS1, 	match_opcode, INSN_ALIAS },
 {"sltz.d",      "Xgap9", "d,s",		MATCH_SLT_D, 			MASK_PALU | MASK_RS2,	match_opcode, INSN_ALIAS },
 {"sgtz.d",      "Xgap9", "d,t",		MATCH_SLT_D, 			MASK_PALU | MASK_RS1,	match_opcode, INSN_ALIAS },
+
+
 
 
 /***********************************************************************************************************************/

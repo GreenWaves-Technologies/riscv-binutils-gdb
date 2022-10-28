@@ -1445,6 +1445,17 @@
 #define	MATCH_ORI_D	0x2000601B
 #define	MATCH_ANDI_D	0x2000701B
 
+/* Gap9.5 pushm/popm */
+#define MATCH_CM_PUSH	0xb802
+#define MASK_CM_PUSH	0xff03
+#define MATCH_CM_POP	0xba02
+#define MASK_CM_POP	0xff03
+#define MATCH_CM_POPRET 0xbe02
+#define MASK_CM_POPRET	0xff03
+#define MATCH_CM_POPRETZ 0xbc02
+#define MASK_CM_POPRETZ 0xff03
+
+
 #endif
 #ifdef DECLARE_INSN
 DECLARE_INSN(slli_rv32, MATCH_SLLI_RV32, MASK_SLLI_RV32)

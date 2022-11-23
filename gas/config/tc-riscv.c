@@ -568,27 +568,40 @@ reg_lookup (char **s, enum reg_class class, unsigned int *regnop)
     reg2 in register list reg1-reg2 or single reg2 is valid or not,
     and obtain the corresponding rlist value.
 
-   ra - 4
-   s0 - 5
-   s1 - 6
-    ....
-  s10 - 0 (invalid)
-  s11 - 15
+    Original scheme:
+	ra -	4
+	s0 - 5
+	s1 - 6
+	....
+	s10 - 0 (invalid)
+	s11 - 15
+    Gap scheme:
+	0       ra, s0-s11
+	4       ra
+	5       ra, s0
+	6       ra, s0-s1
+	...
+	13      ra, s0-s8
+	14      ra, s0-s9
+	15      ra, s0-s10
+
 */
 
 static int
 regno_to_rlist (unsigned regno)
 {
-  if (regno == X_RA)
-    return 4;
-  else if (regno == X_S0 || regno == X_S1)
-    return 5 + regno - X_S0;
-  else if (regno >= X_S2 && regno < X_S10)
-    return 7 + regno - X_S2;
-  else if (regno == X_S11)
-    return 15;
+/*
+  if (regno == X_RA) return 4;
+  else if (regno == X_S0 || regno == X_S1) return 5 + regno - X_S0;
+  else if (regno >= X_S2 && regno < X_S10) return 7 + regno - X_S2;
+  else if (regno == X_S11) return 15;
+*/
+  if (regno == X_RA) return 4;
+  else if (regno == X_S0 || regno == X_S1) return 5 + regno - X_S0;
+  else if (regno >= X_S2 && regno <= X_S10) return 7 + regno - X_S2;
+  else if (regno == X_S11) return 0;
 
-  return 0; /* invalid symbol */
+  return -1; /* invalid symbol */
 }
 
 /* Parse register list, and the parsed rlist value is stored in rlist
@@ -616,7 +629,7 @@ reglist_lookup (char **s, unsigned *rlist)
 
   /* The first register in register list should be ra.  */
   if (!reg_lookup (s, RCLASS_GPR, &regno)
-      || !(*rlist = regno_to_rlist (regno)) /* update rlist */
+      || ((*rlist = regno_to_rlist (regno))<0) /* update rlist */
       || regno != X_RA)
     return FALSE;
 
@@ -636,7 +649,7 @@ reglist_lookup (char **s, unsigned *rlist)
 
   /* Reg1 should be s0 or its numeric names x8. */
   if (!reg_lookup (s, RCLASS_GPR, &regno)
-      || !(*rlist = regno_to_rlist (regno))
+      || ((*rlist = regno_to_rlist (regno))<0)
       || regno != X_S0)
     return FALSE;
 
@@ -656,7 +669,7 @@ reglist_lookup (char **s, unsigned *rlist)
   /* Reg2 is x9 if the numeric name is used or arch is zcmpe,
     otherwise, it could be any other sN register, where N > 0. */
   if (!reg_lookup (s, RCLASS_GPR, &regno)
-      || !(*rlist = regno_to_rlist (regno))
+      || ((*rlist = regno_to_rlist (regno))<0)
       || regno <= X_S0
       || (use_xreg && regno != X_S1)
           || (is_zcmpe && regno != X_S1))
@@ -689,7 +702,7 @@ reglist_lookup (char **s, unsigned *rlist)
 
   /* Reg3 should be s2. */
     if (!reg_lookup (s, RCLASS_GPR, &regno)
-        || !(*rlist = regno_to_rlist (regno))
+        || ((*rlist = regno_to_rlist (regno))<0)
         || regno != X_S2)
       return FALSE;
 
@@ -705,7 +718,7 @@ reglist_lookup (char **s, unsigned *rlist)
 
   /* Reg4 could be any other sN register, where N > 1. */
   if (!reg_lookup (s, RCLASS_GPR, &regno)
-      || !(*rlist = regno_to_rlist (regno))
+      || ((*rlist = regno_to_rlist (regno))<0)
       || regno <= X_S2)
     return FALSE;
 
@@ -1511,14 +1524,37 @@ my_getSmallExpression (expressionS *ep, bfd_reloc_code_real_type *reloc,
   return reloc_index;
 }
 
+static int rlist_regcount(unsigned int rlist)
+
+{
+        switch (rlist) {
+                case 0: return 13;
+                case 4: return 1;
+                case 5: return 2;
+                case 6: return 3;
+                case 7: return 4;
+                case 8: return 5;
+                case 9: return 6;
+                case 10: return 7;
+                case 11: return 8;
+                case 12: return 9;
+                case 13: return 10;
+                case 14: return 11;
+                case 15: return 12;
+                default: return 0;
+        }
+}
+
 static int
 riscv_get_base_spimm (insn_t opcode)
 {
   unsigned sp_alignment = 16;
   unsigned reg_size = (xlen) / 8;
-  unsigned rlist = EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST);
+  // unsigned rlist = EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST);
+  // unsigned min_sp_adj = (rlist - 3) * reg_size + (rlist == 15 ? reg_size : 0);
+  unsigned rlist = rlist_regcount(EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST));
+  unsigned min_sp_adj = rlist * reg_size;
 
-  unsigned min_sp_adj = (rlist - 3) * reg_size + (rlist == 15 ? reg_size : 0);
   return ((min_sp_adj / sp_alignment) + (min_sp_adj % sp_alignment != 0))
           * sp_alignment;
 }

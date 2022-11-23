@@ -302,7 +302,13 @@ static const char * const riscv_pred_succ[16] =
 #define X_A0 10
 #define X_A1 11
 #define X_S2 18
+#define X_S3 19
+#define X_S4 20
+#define X_S5 21
+#define X_S6 22
 #define X_S7 23
+#define X_S8 24
+#define X_S9 25
 #define X_S10 26
 #define X_S11 27
 #define X_T3 28

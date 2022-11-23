@@ -249,13 +249,101 @@ maybe_print_address (struct riscv_private_data *pd, int base_reg, int offset)
 
 /* Get ZCMP rlist field. */
 
+static int rlist_regcount(unsigned int rlist)
+
+{
+	switch (rlist) {
+		case 0: return 13;
+		case 4: return 1;
+		case 5: return 2;
+		case 6: return 3;
+		case 7: return 4;
+		case 8: return 5;
+		case 9: return 6;
+		case 10: return 7;
+		case 11: return 8;
+		case 12: return 9;
+		case 13: return 10;
+		case 14: return 11;
+		case 15: return 12;
+		default: return 0;
+	}
+}
+
 static void
 print_rlist (disassemble_info *info, insn_t l)
 {
   unsigned rlist = (int)EXTRACT_OPERAND (RLIST, l);
-  unsigned r_start = numeric ? X_S2 : X_S0;
-  info->fprintf_func (info->stream, "%s", riscv_gpr_names[X_RA]);
+  // unsigned r_start = numeric ? X_S2 : X_S0;
+  // info->fprintf_func (info->stream, "%s", riscv_gpr_names[X_RA]);
 
+  /*
+        0       ra, s0-s11
+        4       ra
+        5       ra, s0
+        6       ra, s0-s1
+        ...
+        13      ra, s0-s8
+        14      ra, s0-s9
+        15      ra, s0-s10
+*/
+  switch (rlist) {
+	  case 4: info->fprintf_func (info->stream, "%s", riscv_gpr_names[X_RA]); break;
+	  case 5: info->fprintf_func (info->stream, "%s,%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0]); break;
+	  case 6: info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S1]); break;
+	  case 7:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S2]);
+	  case 8:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S3]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S3]);
+		break;
+	  case 9:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S4]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S4]);
+		break;
+	  case 10:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S5]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S5]);
+		break;
+	  case 11:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S6]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S6]);
+		break;
+	  case 12:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S7]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S7]);
+		break;
+	  case 13:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S8]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S8]);
+		break;
+	  case 14:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S9]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S9]);
+		break;
+	  case 15:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S10]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S10]);
+		break;
+	  case 0:
+		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
+				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S11]);
+		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S11]);
+		break;
+	  default: ;
+		/* Error */
+
+  }
+/*
   if (rlist == 5)
     info->fprintf_func (info->stream, ",%s", riscv_gpr_names[X_S0]);
   else if (rlist == 6 || (numeric && rlist > 6))
@@ -274,6 +362,7 @@ print_rlist (disassemble_info *info, insn_t l)
     info->fprintf_func (info->stream, ",%s-%s",
           riscv_gpr_names[r_start],
           riscv_gpr_names[rlist + 11]);
+*/
 }
 
 static int
@@ -281,9 +370,11 @@ riscv_get_base_spimm (insn_t opcode, unsigned int xlen)
 {
   unsigned sp_alignment = 16;
   unsigned reg_size = (xlen) / 8;
-  unsigned rlist = EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST);
+  // unsigned rlist = EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST);
+  // unsigned min_sp_adj = (rlist - 3) * reg_size + (rlist == 15 ? reg_size : 0);
+  unsigned rlist = rlist_regcount(EXTRACT_BITS (opcode, OP_MASK_RLIST, OP_SH_RLIST));
+  unsigned min_sp_adj = rlist * reg_size;
 
-  unsigned min_sp_adj = (rlist - 3) * reg_size + (rlist == 15 ? reg_size : 0);
   return ((min_sp_adj / sp_alignment) + (min_sp_adj % sp_alignment != 0))
           * sp_alignment;
 }

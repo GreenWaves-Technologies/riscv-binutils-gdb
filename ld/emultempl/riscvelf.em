@@ -455,6 +455,10 @@ static void ParsePulpArch(const char *arg)
                   	if (Pulp_Chip.processor == PULP_NONE || Pulp_Chip.processor == PULP_GAP9) Pulp_Chip.processor = PULP_GAP9;
                   	else einfo(_("%F -Xgap9: pulp architecture is already defined as %s"), PulpProcessorImage(Pulp_Chip.processor));
 			break;
+		case PULP_GAP10:
+                  	if (Pulp_Chip.processor == PULP_NONE || Pulp_Chip.processor == PULP_GAP10) Pulp_Chip.processor = PULP_GAP10;
+                  	else einfo(_("%F -Xgap10: pulp architecture is already defined as %s"), PulpProcessorImage(Pulp_Chip.processor));
+			break;
 		case PULP_NONE:
 			if (Len==0) {
                   		einfo(_ ("%F -march=%s: unsupported ISA substring %s"), arg, p); return;
@@ -500,6 +504,9 @@ static void ParsePulpChip(const char *arg)
   } else if (strncmp (p, "GAP9", 4) == 0) {
         ParsePulpArch ("IXgap9");
         UpdatePulpChip(&Pulp_Chip, &Pulp_Defined_Chips[PULP_CHIP_GAP9]);
+  } else if (strncmp (p, "GAP10", 5) == 0) {
+        ParsePulpArch ("IXgap10");
+        UpdatePulpChip(&Pulp_Chip, &Pulp_Defined_Chips[PULP_CHIP_GAP10]);
   } else {
         einfo(_("%F Unsupported pulp chip %s"), arg);
   }

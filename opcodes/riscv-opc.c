@@ -494,10 +494,10 @@ const struct riscv_opcode riscv_opcodes[] =
 {"fcvt.s.lu", "64F", "D,s,m",  MATCH_FCVT_S_LU, MASK_FCVT_S_LU, match_opcode, 0 },
 
 /* PushM/PopM 16b, must be before compressed fsd fsdsp since it is reusing its encoding */
-{"cm.push",     "Xgap9", "{CZr},CZp",	MATCH_CM_PUSH, 			MASK_CM_PUSH, 		match_opcode, 0 },
-{"cm.pop",     	"Xgap9",  "{CZr},CZp",	MATCH_CM_POP,			MASK_CM_POP, 		match_opcode, 0 },
-{"cm.popret",  	"Xgap9",  "{CZr},CZp",	MATCH_CM_POPRET,		MASK_CM_POPRET, 	match_opcode, 0 },
-{"cm.popretz", 	"Xgap9",  "{CZr},CZp",	MATCH_CM_POPRETZ,		MASK_CM_POPRETZ,	match_opcode, 0 },
+{"cm.push",     "Xgap10", "{CZr},CZp",	MATCH_CM_PUSH, 			MASK_CM_PUSH, 		match_opcode, 0 },
+{"cm.pop",     	"Xgap10",  "{CZr},CZp",	MATCH_CM_POP,			MASK_CM_POP, 		match_opcode, 0 },
+{"cm.popret",  	"Xgap10",  "{CZr},CZp",	MATCH_CM_POPRET,		MASK_CM_POPRET, 	match_opcode, 0 },
+{"cm.popretz", 	"Xgap10",  "{CZr},CZp",	MATCH_CM_POPRETZ,		MASK_CM_POPRETZ,	match_opcode, 0 },
 
 /* Double-precision floating-point instruction subset */
 {"fld",       "C",   "D,Cn(Cc)",  MATCH_C_FLDSP, MASK_C_FLDSP, match_opcode, INSN_ALIAS },

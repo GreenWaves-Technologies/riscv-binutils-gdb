@@ -196,6 +196,7 @@ parse_riscv_dis_option (const char *option)
 	else if (strstr(uppercase, "HONEY")) riscv_set_arch ("RV32IMCXpulpv0");
 	else if (strstr(uppercase, "GAP8")) riscv_set_arch ("RV32IMCXgap8");
 	else if (strstr(uppercase, "GAP9")) riscv_set_arch ("RV32IMCXgap9");
+	else if (strstr(uppercase, "GAP10")) riscv_set_arch ("RV32IMCXgap10");
         else fprintf (stderr, _("Unrecognized mchip= : %s\n"), uppercase);
         if (comma) *comma = ',';
     } else {

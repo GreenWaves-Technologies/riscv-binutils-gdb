@@ -295,6 +295,7 @@ print_rlist (disassemble_info *info, insn_t l)
 	  case 7:
 		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2]);
 		else info->fprintf_func (info->stream, "%s,%s-%s", riscv_gpr_names[X_RA], riscv_gpr_names[X_S0], riscv_gpr_names[X_S2]);
+		break;
 	  case 8:
 		if (numeric) info->fprintf_func (info->stream, "%s,%s-%s,%s-%s", riscv_gpr_names[X_RA],
 				riscv_gpr_names[X_S0], riscv_gpr_names[X_S1], riscv_gpr_names[X_S2], riscv_gpr_names[X_S3]);

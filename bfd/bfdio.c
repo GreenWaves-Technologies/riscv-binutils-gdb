@@ -26,6 +26,8 @@
 #include "bfd.h"
 #include "libbfd.h"
 
+#include <stdio.h>
+
 #ifndef S_IXUSR
 #define S_IXUSR 0100    /* Execute by owner.  */
 #endif

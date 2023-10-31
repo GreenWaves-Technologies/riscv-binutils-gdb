@@ -549,6 +549,7 @@ bfd_cache_close (bfd *abfd)
     /* Previously closed.  */
     return TRUE;
 
+/* MYDUMP */ // printf("bfd_cache_close: %s, flags: 0x%8x\n", abfd->filename?abfd->filename:"<NoName>", abfd->flags);
   return bfd_cache_delete (abfd);
 }
 
@@ -609,15 +610,19 @@ bfd_open_file (bfd *abfd)
     {
     case read_direction:
     case no_direction:
+/* MYDUMP */  // printf("(1) bfd_open_file: Opening %s with Mode %s\n", abfd->filename, FOPEN_RB);
       abfd->iostream = real_fopen (abfd->filename, FOPEN_RB);
       break;
     case both_direction:
     case write_direction:
       if (abfd->opened_once)
 	{
+/* MYDUMP */  // printf("(2) bfd_open_file: Opening %s with Mode %s\n", abfd->filename, FOPEN_RUB);
 	  abfd->iostream = real_fopen (abfd->filename, FOPEN_RUB);
-	  if (abfd->iostream == NULL)
+	  if (abfd->iostream == NULL) {
+/* MYDUMP */  // printf("(3) bfd_open_file: Opening %s with Mode %s\n", abfd->filename, FOPEN_WUB);
 	    abfd->iostream = real_fopen (abfd->filename, FOPEN_WUB);
+	  }
 	}
       else
 	{
@@ -647,6 +652,7 @@ bfd_open_file (bfd *abfd)
 	  if (stat (abfd->filename, &s) == 0 && s.st_size != 0)
 	    unlink_if_ordinary (abfd->filename);
 #endif
+/* MYDUMP */  // printf("(4) bfd_open_file: Opening %s with Mode %s\n", abfd->filename, FOPEN_WUB);
 	  abfd->iostream = real_fopen (abfd->filename, FOPEN_WUB);
 	  abfd->opened_once = TRUE;
 	}

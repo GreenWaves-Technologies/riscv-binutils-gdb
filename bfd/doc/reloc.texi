@@ -2588,6 +2588,10 @@ number for the SBIC, SBIS, SBI and CBI instructions
 @deffnx {} BFD_RELOC_RISCV_SET8
 @deffnx {} BFD_RELOC_RISCV_SET16
 @deffnx {} BFD_RELOC_RISCV_SET32
+@deffnx {} BFD_RELOC_RISCV_REL12
+@deffnx {} BFD_RELOC_RISCV_RELU5
+@deffnx {} BFD_RELOC_RISCV_12_I
+@deffnx {} BFD_RELOC_RISCV_12_S
 RISC-V relocations.
 @end deffn
 @deffn {} BFD_RELOC_RL78_NEG8

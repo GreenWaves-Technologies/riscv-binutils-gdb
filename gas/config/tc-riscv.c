@@ -37,6 +37,9 @@
 #include "../../../riscv-gcc/gcc/config/riscv/riscv-opts.h"
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
+
 
 /* Information about an instruction, including its format, operands
    and fixups.  */
@@ -79,6 +82,8 @@ struct riscv_set_options
   int pic; /* Generate position-independent code.  */
   int rvc; /* Generate RVC code.  */
   int relax; /* Emit relocs the linker is allowed to relax.  */
+  int encrypt; /* AES Encrypt text section */
+  char *encrypt_info;
 };
 
 static struct riscv_set_options riscv_opts =
@@ -86,15 +91,35 @@ static struct riscv_set_options riscv_opts =
   0,	/* pic */
   0,	/* rvc */
   1,	/* relax */
+  0, 	/* encrypt */
+  0,	/* encrypt_info */
 };
 
-static struct Pulp_Target_Chip Pulp_Chip = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1};
+static struct Pulp_Target_Chip Pulp_Chip = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1, {0}};
 
 static int WarnInsn = 0;
 
 static void pulp_set_chip(const char *arg);
 static void pulp_add_chip_info(void);
 
+
+int ProcessEncryptionInfos(char *InfoName, int Mode);
+void SetEncryptMode(int Mode);
+int EncryptVerbose();
+int ComponentMustBeEncrypted(char *Name);
+void SetEncryptActiveComponent(char *Name);
+
+static void
+riscv_set_encrypt (char *filename)
+{
+  if (filename) {
+	SetEncryptMode(0);
+  	riscv_opts.encrypt = 1;
+  	riscv_opts.encrypt_info = strdup(filename);
+	ProcessEncryptionInfos(filename, 0);
+	if (EncryptVerbose()) printf("ASM encrypted with %s\n", filename);
+  }
+}
 
 static void
 riscv_set_rvc (bfd_boolean rvc_value)
@@ -911,6 +936,23 @@ md_begin (void)
 
   if (! bfd_set_arch_mach (stdoutput, bfd_arch_riscv, mach))
     as_warn (_("Could not set architecture and machine"));
+
+  if (riscv_opts.encrypt_info) {
+	  stdoutput->flags |= BFD_IN_MEMORY;
+	  if (ComponentMustBeEncrypted(stdoutput->filename)) {
+		ComponentNonceUpdate(stdoutput->filename, Pulp_Chip.Nonce);
+		/*
+		if (EncryptVerbose()) {
+			printf("Setting Component %s with Nonce = ", stdoutput->filename);
+  			for (int i=0; i<16; i++) printf("%2x", Pulp_Chip.Nonce[i]);
+			printf("\n");
+		}
+		*/
+		SetEncryptActiveComponent(stdoutput->filename);
+		stdoutput->flags |= BFD_ENCRYPTED;
+	  }
+	  // text_section->flags |= SEC_IN_MEMORY;
+  }
 
   op_hash = hash_new ();
 
@@ -2291,6 +2333,7 @@ enum options
     OPTION_CPU,
     OPTION_CHIP,
     OPTION_WARNINSN,
+    OPTION_ENCRYPT,
   OPTION_END_OF_ENUM
 };
 
@@ -2312,6 +2355,7 @@ struct option md_longopts[] =
   {"mcpu", required_argument, NULL, OPTION_CPU},
   {"mchip", required_argument, NULL, OPTION_CHIP},
   {"mwinsn", no_argument, NULL, OPTION_WARNINSN},
+  {"mencrypt-info", required_argument, NULL, OPTION_ENCRYPT},
 
   {NULL, no_argument, NULL, 0}
 };
@@ -2338,7 +2382,6 @@ md_parse_option (int c, const char *arg)
 {
   int Arg;
   static int Defined = 0;
-
   switch (c)
     {
     case OPTION_MARCH:
@@ -2405,6 +2448,9 @@ md_parse_option (int c, const char *arg)
     case OPTION_WARNINSN:
       WarnInsn = 1;
       break;
+    case OPTION_ENCRYPT:
+      riscv_set_encrypt (optarg);
+      break;
 
     default:
       return 0;
@@ -2458,6 +2504,15 @@ riscv_after_parse_args (void)
 
   /* Insert float_abi into the EF_RISCV_FLOAT_ABI field of elf_flags.  */
   elf_flags |= float_abi * (EF_RISCV_FLOAT_ABI & ~(EF_RISCV_FLOAT_ABI << 1));
+
+  /* Generate a random sequence for the nonce */
+  {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+        srand((unsigned) t.tv_nsec);
+
+  	for (int i=0; i<16; i++) Pulp_Chip.Nonce[i] = rand();
+  }
 }
 
 long
@@ -3129,18 +3184,19 @@ md_show_usage (FILE *stream)
 {
   fprintf (stream, _("\
 RISC-V options:\n\
-  -fpic          generate position-independent code\n\
-  -fno-pic       don't generate position-independent code (default)\n\
-  -march=ISA     set the RISC-V architecture\n\
-  -mabi=ABI      set the RISC-V ABI\n\
-  -mchip=CHIP    set Pulp chip target\n\
-  -mL2           set pulp L2 size to Value\n\
-  -mL1Cl=Value   set pulp cluster L1 size to Value\n\
-  -mL1Fc=Value   set pulp fabric controller L1 size, if any, to Value\n\
-  -mPE=Value     define number of processing element in Pulp cluster\n\
-  -mFC=Value     if Value=0 assume there is no fabric controler, if Value!=0 assume there is one FC\n\
-  -mchip=Name    define targeted chip as Name\n\
-  -mwinsn        turn on warning on marked asm instructions\n\
+  -fpic               generate position-independent code\n\
+  -fno-pic            don't generate position-independent code (default)\n\
+  -march=ISA          set the RISC-V architecture\n\
+  -mabi=ABI           set the RISC-V ABI\n\
+  -mchip=CHIP         set Pulp chip target\n\
+  -mL2                set pulp L2 size to Value\n\
+  -mL1Cl=Value        set pulp cluster L1 size to Value\n\
+  -mL1Fc=Value        set pulp fabric controller L1 size, if any, to Value\n\
+  -mPE=Value          define number of processing element in Pulp cluster\n\
+  -mFC=Value          if Value=0 assume there is no fabric controler, if Value!=0 assume there is one FC\n\
+  -mchip=Name         define targeted chip as Name\n\
+  -mwinsn             turn on warning on marked asm instructions\n\
+  -mencrypt-info=Name pass module encryption in file Name\n\
 "));
 }
 
@@ -3170,6 +3226,100 @@ void pulp_md_end(void)
 
 {
     pulp_add_chip_info();
+}
+
+static void DumpSecFlags(sec_ptr section)
+
+{
+        char Str[256];
+        int Cpt = 0;
+        int N = 5;
+
+        Str[0] = 0;
+        sprintf(Str, "\t\t");
+
+        if ((section->flags & SEC_ALLOC) != 0) { strcat(Str, " Alloc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_LOAD) != 0) { strcat(Str, " Load"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_RELOC) != 0) { strcat(Str, " Reloc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_READONLY) != 0) { strcat(Str, " ReadOnly"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_CODE) != 0) { strcat(Str, " Code"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_DATA) != 0) { strcat(Str, " Data"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_ROM) != 0) { strcat(Str, " Rom"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_CONSTRUCTOR) != 0) { strcat(Str, " Construct"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_HAS_CONTENTS) != 0) { strcat(Str, " HasCont"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_NEVER_LOAD) != 0) { strcat(Str, " NeverLoad"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_THREAD_LOCAL) != 0) { strcat(Str, " ThreadLoc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_HAS_GOT_REF) != 0) { strcat(Str, " HasGotRef"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_IS_COMMON) != 0) { strcat(Str, " IsCommon"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_DEBUGGING) != 0) { strcat(Str, " Debug"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_IN_MEMORY) != 0) { strcat(Str, " InMem"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_EXCLUDE) != 0) { strcat(Str, " Exclude"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_SORT_ENTRIES) != 0) { strcat(Str, " Sort"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_LINK_ONCE) != 0) { strcat(Str, " LinkOnce"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_LINK_DUPLICATES_ONE_ONLY) != 0) { strcat(Str, " LinkDupOne"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_LINK_DUPLICATES_SAME_SIZE) != 0) { strcat(Str, " LinkDupSS"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_LINKER_CREATED) != 0) { strcat(Str, " LkCreated"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_KEEP) != 0) { strcat(Str, " Keep"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_SMALL_DATA) != 0) { strcat(Str, " SmallData"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_MERGE) != 0) { strcat(Str, " Merge"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_STRINGS) != 0) { strcat(Str, " Strings"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_GROUP) != 0) { strcat(Str, " Group"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_ELF_REVERSE_COPY) != 0) { strcat(Str, " RevCopy"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_ELF_COMPRESS) != 0) { strcat(Str, " Compress"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_ELF_RENAME) != 0) { strcat(Str, " Rename"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_MEP_VLIW) != 0) { strcat(Str, " MAGIC"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_COFF_NOREAD) != 0) { strcat(Str, " CoffNoRd"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if ((section->flags & SEC_ELF_PURECODE) != 0) { strcat(Str, " PureCode"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+        if (Cpt) printf("%s\n", Str);
+}
+
+void EncryptSection(bfd *abfd, asection *section, void *dummy ATTRIBUTE_UNUSED)
+
+{
+	if (riscv_opts.encrypt_info == 0) return;
+
+	if (((section->flags & SEC_CODE) == 0) || ((section->flags & SEC_HAS_CONTENTS) == 0)) return;
+
+	if (ComponentMustBeEncrypted(abfd->filename)) {
+		/*
+		if (EncryptVerbose()) {
+			printf("Setting Component %s with Nonce = ", abfd->filename);
+  			for (int i=0; i<16; i++) printf("%2x", Pulp_Chip.Nonce[i]);
+			printf("\n");
+		}
+		*/
+  		elf_flags |= EF_RISCV_ENCRYPTED;
+		elf_elfheader (stdoutput)->e_flags |= EF_RISCV_ENCRYPTED;
+		abfd->flags |= BFD_ENCRYPTED;
+	}
+/*
+	printf("In bfd %s, section %s, section@: %llX\n",
+		abfd->filename,
+		section->name,
+		(unsigned long long int) section);
+	DumpSecFlags(section);
+
+	bfd_size_type datasize;
+	bfd_byte *data = 0;
+
+	if ((datasize = bfd_section_size (abfd, section)) == 0) return;
+
+	if (!bfd_get_full_section_contents (abfd, section, &data)) {
+      		as_fatal (_("Reading section %s failed because: %s"), section->name, bfd_errmsg (bfd_get_error ()));
+      		return;
+	}
+	printf("TEXT section read OK, size is %ld\n", datasize);
+	for (int i=0; i<datasize; i++) {
+		printf("\t%X\n", data[i]);
+	}
+
+	if (!bfd_set_section_contents(abfd, section, data, (file_ptr) 0, datasize)) {
+      		as_fatal (_("Writing section %s failed because: %s"), section->name, bfd_errmsg (bfd_get_error ()));
+	}
+	printf("TEXT section write OK, size is %ld\n", datasize);
+	free(data);
+*/
+
 }
 
 void

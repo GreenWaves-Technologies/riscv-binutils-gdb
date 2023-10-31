@@ -91,7 +91,7 @@ CODE_FRAGMENT
 .  ENUM_BITFIELD (bfd_direction) direction : 2;
 .
 .  {* Format_specific flags.  *}
-.  flagword flags : 20;
+.  flagword flags : 21;
 .
 .  {* Values that may appear in the flags field of a BFD.  These also
 .     appear in the object_flags field of the bfd_target structure, where
@@ -177,6 +177,9 @@ CODE_FRAGMENT
 .
 .  {* Use the ELF STT_COMMON type in this BFD.  *}
 .#define BFD_USE_ELF_STT_COMMON 0x80000
+.
+.  {* BFD contains encrypted sections, GAP specific.  *}
+.#define BFD_ENCRYPTED 0x100000
 .
 .  {* Flags bits to be saved in bfd_preserve_save.  *}
 .#define BFD_FLAGS_SAVED \

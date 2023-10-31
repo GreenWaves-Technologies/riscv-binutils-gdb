@@ -191,6 +191,34 @@ DESCRIPTION
 	BFD.  It can be accessed via the bfd_get_filename() macro.
 */
 
+void Dump_BFD_Flag(bfd *abfd)
+
+{
+	printf("Flags: ");
+	if (abfd->flags & HAS_RELOC) printf(" HasReloc");
+	if (abfd->flags & EXEC_P) printf(" ExecP");
+	if (abfd->flags & HAS_LINENO) printf(" HasLno");
+	if (abfd->flags & HAS_DEBUG) printf(" HasDbg");
+	if (abfd->flags & HAS_SYMS) printf(" HasSyms");
+	if (abfd->flags & HAS_LOCALS) printf(" HasLocals");
+	if (abfd->flags & DYNAMIC) printf(" Dyna");
+	if (abfd->flags & WP_TEXT) printf(" WpText");
+	if (abfd->flags & D_PAGED) printf(" DPageD");
+	if (abfd->flags & BFD_IS_RELAXABLE) printf(" IsRelax");
+	if (abfd->flags & BFD_TRADITIONAL_FORMAT) printf(" TradF");
+	if (abfd->flags & BFD_IN_MEMORY) printf(" InMem");
+	if (abfd->flags & BFD_LINKER_CREATED) printf(" LkCre");
+	if (abfd->flags & BFD_DETERMINISTIC_OUTPUT) printf(" DetOut");
+	if (abfd->flags & BFD_COMPRESS) printf(" Comp");
+	if (abfd->flags & BFD_DECOMPRESS) printf(" DeComp");
+	if (abfd->flags & BFD_PLUGIN) printf(" Plugin");
+	if (abfd->flags & BFD_COMPRESS_GABI) printf(" CompGa");
+	if (abfd->flags & BFD_CONVERT_ELF_COMMON) printf(" ConvElfC");
+	if (abfd->flags & BFD_USE_ELF_STT_COMMON) printf(" UseElfStt");
+	if (abfd->flags & BFD_ENCRYPTED) printf(" Encrypted");
+	printf("\n");
+}
+
 bfd *
 bfd_fopen (const char *filename, const char *target, const char *mode, int fd)
 {
@@ -219,6 +247,7 @@ bfd_fopen (const char *filename, const char *target, const char *mode, int fd)
     nbfd->iostream = fdopen (fd, mode);
   else
 #endif
+/* MYDUMP */ // printf("bfd_open: Opening %s with Mode %s, fd=%d\n", filename, mode, fd);
     nbfd->iostream = real_fopen (filename, mode);
   if (nbfd->iostream == NULL)
     {
@@ -257,6 +286,13 @@ bfd_fopen (const char *filename, const char *target, const char *mode, int fd)
   if (fd == -1)
     (void) bfd_set_cacheable (nbfd, TRUE);
 
+  // Elf_Internal_Ehdr *i_ehdrp = elf_elfheader(nbfd);
+  // if (i_ehdrp) printf("Elf Flag: %X\n", i_ehdrp->e_flags); else printf("NO ELF HEADER\n");
+  // if (i_ehdrp && (i_ehdrp->e_flags & EF_RISCV_ENCRYPTED)) nbfd->flags |= BFD_ENCRYPTED;
+
+  // Dump_BFD_Flag(nbfd);
+  // if (nbfd->flags & BFD_ENCRYPTED) printf("\tEncrypted BFD\n");
+
   return nbfd;
 }
 
@@ -285,6 +321,7 @@ DESCRIPTION
 bfd *
 bfd_openr (const char *filename, const char *target)
 {
+	// printf("bfd_openr ");
   return bfd_fopen (filename, target, FOPEN_RB, -1);
 }
 
@@ -358,6 +395,7 @@ bfd_fdopenr (const char *filename, const char *target, int fd)
     }
 #endif
 
+	// printf("bfd_fdopenr ");
   return bfd_fopen (filename, target, mode, fd);
 }
 
@@ -1288,6 +1326,7 @@ separate_debug_file_exists (const char *name, const unsigned long crc)
 
   BFD_ASSERT (name);
 
+/* MYDUMP */ // printf("separate_debug_file_exists: Opening %s with Mode %s\n", name, FOPEN_RB);
   f = real_fopen (name, FOPEN_RB);
   if (f == NULL)
     return FALSE;
@@ -1704,6 +1743,7 @@ bfd_fill_in_gnu_debuglink_section (bfd *abfd,
      .gnu_debuglink section, we insist upon the user providing us with a
      correct-for-section-creation-time path, but this need not conform to
      the gdb location algorithm.  */
+/* MYDUMP */ // printf("bfd_fill_in_gnu_debuglink_section: Opening %s with Mode %s\n", filename, FOPEN_RUB);
   handle = real_fopen (filename, FOPEN_RB);
   if (handle == NULL)
     {

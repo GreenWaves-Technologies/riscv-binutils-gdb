@@ -48,4 +48,5 @@ extern void PulpRegisterSymbolEntry(struct bfd_sym_chain, bfd_boolean);
 
 extern bfd_boolean ComponentMode;
 extern unsigned int DumpImportExportSections;
+extern char *EncryptInfo;
 

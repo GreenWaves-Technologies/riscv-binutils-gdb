@@ -64,6 +64,9 @@ bfd_boolean ComponentMode = FALSE;
 
 /*  Linker argumenr -mDIE, to dump import and export sections */
 unsigned int DumpImportExportSections = 0;
+
+/* Linker argument -mencrypt-info=<file_name> */
+char *EncryptInfo = 0;
 #endif
 
 /* The RISC-V linker needs to keep track of the number of relocs that it

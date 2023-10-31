@@ -136,6 +136,8 @@ SUBSECTION
 #include "bfd.h"
 #include "libbfd.h"
 #include "bfdlink.h"
+#include <stdio.h>
+#include <string.h>
 
 /*
 DOCDD
@@ -751,6 +753,1030 @@ CODE_FRAGMENT
 #define GLOBAL_SYM_INIT(NAME, SECTION) \
   { 0, NAME, 0, BSF_SECTION_SYM, SECTION }
 #endif
+
+/************************************************************************/
+/* Gap specific, support for bfd encryption/decryption, used by gas and ld */
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <ctype.h>
+
+/*
+ *      Source is from https://github.com/kokke/tiny-AES-c/tree/master
+ *
+ *      Small portable AES128/192/256 in C. Pruned to support only CTR mode. AES128/192/256 are supported
+ *      through static compilation flags.
+ *
+ */
+
+#define AES128 1
+//#define AES192 1
+//#define AES256 1
+
+#define	ENC_STR_SIZE	512
+#define	AES_KEY_LEN	16
+#define	AES_IV_LEN	16
+
+#define AES_BLOCKLEN 16 // Block length in bytes - AES is 128b block only
+
+// The number of columns comprising a state in AES. This is a constant in AES. Value=4
+#define AES_Nb 4
+
+#if defined(AES256) && (AES256 == 1)
+    #define AES_KEYLEN 32
+    #define AES_keyExpSize 240
+    #define AES_Nk 8
+    #define AES_Nr 14
+#elif defined(AES192) && (AES192 == 1)
+    #define AES_KEYLEN 24
+    #define AES_keyExpSize 208
+    #define AES_Nk 6
+    #define AES_Nr 12
+#else
+    #define AES_KEYLEN 16   // Key length in bytes
+    #define AES_keyExpSize 176
+    #define AES_Nk 4        // The number of 32 bit words in a key.
+    #define AES_Nr 10       // The number of rounds in AES Cipher.
+#endif
+
+typedef struct AES_ctx {
+        uint8_t RoundKey[AES_keyExpSize];
+        uint8_t Iv[AES_BLOCKLEN];
+} AES_ctx_t;
+
+typedef struct A_CryptedComponentT CryptedComponentT;
+
+typedef struct A_CryptedComponentT {
+	char *Name;
+	char *Vendor;
+	char *Server;
+	char *UserAuth;
+	unsigned char *Key;	// AES KeyLen/8
+	unsigned char *Iv;	// Initialization variable, retrieved from Vendor's server. Always 128b, 16B
+	unsigned char *Nonce;	// Nonce coming from the PulpChipInfo section of this coomponent's obj file
+	CryptedComponentT *Next;
+} CryptedComponentT;
+
+
+typedef struct {
+	int Mode;				// 0: ASM, 1: Linker, 2: Dump
+	int Verbose;
+	CryptedComponentT *Components;		// All components
+	CryptedComponentT *OutComponent;	// Active output Component
+	AES_ctx_t AES_Ctx;			// AES context
+} EncryptInfoT;
+
+typedef enum {
+	ERR_NOERR_EOF = -1,
+	ERR_NOERR = 0,
+	ERR_UNEXPECTED_EOF = 1,
+	ERR_EXPECT_COMP = 2,
+	ERR_EXPECT_SET = 3,
+	ERR_EXPECT_STRING = 4,
+	ERR_EXPECT_VENDOR = 5,
+	ERR_EXPECT_SERVER = 6,
+	ERR_EXPECT_KEY = 7,
+	ERR_EXPECT_NAME = 8,
+	ERR_BADKEYLEN = 9,
+	ERR_KEYNONHEX = 10,
+	ERR_EXPECT_USER = 11,
+	ERR_EXPECT_SECTION = 12,
+	ERR_EXPECT_COMP_OR_IV = 13,
+	ERR_WRONG_COMP = 14,
+} CompErrorT;
+
+typedef enum {
+	T_STRING=0,
+	T_NAME=1,
+	T_EOFT=2,
+	T_UNKNOWN=3,
+	T_UNTERM=4,
+	T_SET=5,
+	T_SEMI=6,
+	T_COMPONENT=7,
+	T_SERVER=8,
+	T_VENDOR=9,
+	T_KEY=10,
+	T_USER=11,
+	T_IV=12,
+	T_VERBOSE=13,
+} TokenT;
+
+static EncryptInfoT EncryptInfo = {0, 0, 0, 0, {{0}, {0}}};
+
+typedef uint8_t AES_state_t[4][4];
+
+// The lookup-tables are marked const so they can be placed in read-only storage instead of RAM
+// The numbers below can be computed dynamically trading ROM for RAM -
+// This can be useful in (embedded) bootloader applications, where ROM is often limited.
+static const uint8_t AES_sbox[256] = {
+  //0     1    2      3     4    5     6     7      8    9     A      B    C     D     E     F
+  0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+  0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+  0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+  0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+  0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+  0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+  0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+  0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+  0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+  0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+  0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+  0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+  0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+  0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+  0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+  0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16 };
+
+
+
+// The round constant word array, AES_Rcon[i], contains the values given by
+// x to the power (i-1) being powers of x (x is denoted as {02}) in the field GF(2^8)
+static const uint8_t AES_Rcon[11] = { 0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36 };
+
+#define AES_getSBoxValue(num) (AES_sbox[(num)])
+
+// This function produces AES_Nb(AES_Nr+1) round keys. The round keys are used in each round to decrypt the states.
+static void AES_KeyExpansion(uint8_t* RoundKey, const uint8_t* Key)
+
+{
+	uint8_t tempa[4]; // Used for the column/row operations
+
+	// The first round key is the key itself.
+	for (int i = 0; i < AES_Nk; ++i) {
+		RoundKey[(i * 4) + 0] = Key[(i * 4) + 0];
+		RoundKey[(i * 4) + 1] = Key[(i * 4) + 1];
+		RoundKey[(i * 4) + 2] = Key[(i * 4) + 2];
+		RoundKey[(i * 4) + 3] = Key[(i * 4) + 3];
+	}
+	// All other round keys are found from the previous round keys.
+	for (int i = AES_Nk; i < AES_Nb * (AES_Nr + 1); ++i) {
+		int k = (i - 1) * 4;
+		tempa[0] = RoundKey[k + 0];
+		tempa[1] = RoundKey[k + 1];
+		tempa[2] = RoundKey[k + 2];
+		tempa[3] = RoundKey[k + 3];
+		if (i % AES_Nk == 0) {
+			// This function shifts the 4 bytes in a word to the left once.
+			// [a0,a1,a2,a3] becomes [a1,a2,a3,a0]
+
+			// Function RotWord()
+			{
+				const uint8_t u8tmp = tempa[0];
+				tempa[0] = tempa[1];
+				tempa[1] = tempa[2];
+				tempa[2] = tempa[3];
+				tempa[3] = u8tmp;
+			}
+			// SubWord() is a function that takes a four-byte input word and
+			// applies the S-box to each of the four bytes to produce an output word.
+
+			// Function Subword()
+			{
+				tempa[0] = AES_getSBoxValue(tempa[0]);
+				tempa[1] = AES_getSBoxValue(tempa[1]);
+				tempa[2] = AES_getSBoxValue(tempa[2]);
+				tempa[3] = AES_getSBoxValue(tempa[3]);
+			}
+			tempa[0] = tempa[0] ^ AES_Rcon[i/AES_Nk];
+		}
+#if defined(AES256) && (AES256 == 1)
+		if (i % AES_Nk == 4) {
+			// Function Subword()
+			{
+				tempa[0] = AES_getSBoxValue(tempa[0]);
+				tempa[1] = AES_getSBoxValue(tempa[1]);
+				tempa[2] = AES_getSBoxValue(tempa[2]);
+				tempa[3] = AES_getSBoxValue(tempa[3]);
+			}
+		}
+#endif
+		int j = i * 4;
+		k = (i - AES_Nk) * 4;
+		RoundKey[j + 0] = RoundKey[k + 0] ^ tempa[0];
+		RoundKey[j + 1] = RoundKey[k + 1] ^ tempa[1];
+		RoundKey[j + 2] = RoundKey[k + 2] ^ tempa[2];
+		RoundKey[j + 3] = RoundKey[k + 3] ^ tempa[3];
+	}
+}
+
+
+static void AES_init_ctx(AES_ctx_t* ctx, const uint8_t* key)
+
+{
+	AES_KeyExpansion(ctx->RoundKey, key);
+}
+
+static void AES_init_ctx_iv(AES_ctx_t* ctx, const uint8_t* key, const uint8_t* iv)
+
+{
+	AES_KeyExpansion(ctx->RoundKey, key);
+	memcpy (ctx->Iv, iv, AES_BLOCKLEN);
+}
+
+static void AES_ctx_set_iv(AES_ctx_t* ctx, const uint8_t* iv, const uint8_t* nounce)
+
+{
+	for (int i=0; i<AES_BLOCKLEN; i++) ctx->Iv[i] = iv[i] ^ nounce[i];
+	// memcpy (ctx->Iv, iv, AES_BLOCKLEN);
+}
+
+// This function adds the round key to state.
+// The round key is added to the state by an XOR function.
+static void AES_AddRoundKey(uint8_t round, AES_state_t* state, const uint8_t* RoundKey)
+
+{
+	for (int i = 0; i < 4; ++i)
+		for (int j = 0; j < 4; ++j)
+			(*state)[i][j] ^= RoundKey[(round * AES_Nb * 4) + (i * AES_Nb) + j];
+}
+
+// The SubBytes Function Substitutes the values in the
+// state matrix with values in an S-box.
+static void AES_SubBytes(AES_state_t* state)
+
+{
+	for (int i = 0; i < 4; ++i)
+		for (int j = 0; j < 4; ++j) (*state)[j][i] = AES_getSBoxValue((*state)[j][i]);
+}
+
+// The ShiftRows() function shifts the rows in the state to the left.
+// Each row is shifted with different offset.
+// Offset = Row number. So the first row is not shifted.
+static void AES_ShiftRows(AES_state_t* state)
+
+{
+	uint8_t temp;
+
+	// Rotate first row 1 columns to left
+	temp	   = (*state)[0][1];
+	(*state)[0][1] = (*state)[1][1];
+	(*state)[1][1] = (*state)[2][1];
+	(*state)[2][1] = (*state)[3][1];
+	(*state)[3][1] = temp;
+
+	// Rotate second row 2 columns to left
+	temp	   = (*state)[0][2];
+	(*state)[0][2] = (*state)[2][2];
+	(*state)[2][2] = temp;
+
+	temp	   = (*state)[1][2];
+	(*state)[1][2] = (*state)[3][2];
+	(*state)[3][2] = temp;
+
+	// Rotate third row 3 columns to left
+	temp	   = (*state)[0][3];
+	(*state)[0][3] = (*state)[3][3];
+	(*state)[3][3] = (*state)[2][3];
+	(*state)[2][3] = (*state)[1][3];
+	(*state)[1][3] = temp;
+}
+
+static uint8_t AES_xtime(uint8_t x)
+
+{
+	return ((x<<1) ^ (((x>>7) & 1) * 0x1b));
+}
+
+// MixColumns function mixes the columns of the state matrix
+static void AES_MixColumns(AES_state_t* state)
+
+{
+	uint8_t Tmp, Tm, t;
+	for (int i = 0; i < 4; ++i) {
+		t   = (*state)[i][0];
+		Tmp = (*state)[i][0] ^ (*state)[i][1] ^ (*state)[i][2] ^ (*state)[i][3] ;
+		Tm  = (*state)[i][0] ^ (*state)[i][1] ; Tm = AES_xtime(Tm);  (*state)[i][0] ^= Tm ^ Tmp ;
+		Tm  = (*state)[i][1] ^ (*state)[i][2] ; Tm = AES_xtime(Tm);  (*state)[i][1] ^= Tm ^ Tmp ;
+		Tm  = (*state)[i][2] ^ (*state)[i][3] ; Tm = AES_xtime(Tm);  (*state)[i][2] ^= Tm ^ Tmp ;
+		Tm  = (*state)[i][3] ^ t ;	      Tm = AES_xtime(Tm);  (*state)[i][3] ^= Tm ^ Tmp ;
+	}
+}
+
+// Cipher is the main function that encrypts the PlainText.
+static void AES_Cipher(AES_state_t* state, const uint8_t* RoundKey)
+
+{
+	uint8_t round = 0;
+
+	// Add the First round key to the state before starting the rounds.
+	AES_AddRoundKey(0, state, RoundKey);
+
+	// There will be AES_Nr rounds.
+	// The first AES_Nr-1 rounds are identical.
+	// These AES_Nr rounds are executed in the loop below.
+	// Last one without MixColumns()
+	for (round = 1; ; ++round) {
+		AES_SubBytes(state);
+		AES_ShiftRows(state);
+		if (round == AES_Nr) break;
+		AES_MixColumns(state);
+		AES_AddRoundKey(round, state, RoundKey);
+	}
+	// Add round key to last round
+	AES_AddRoundKey(AES_Nr, state, RoundKey);
+}
+
+
+/* Symmetrical operation: same function for encrypting as for decrypting. Note any IV/nonce should never be reused with the same key */
+static void AES_CTR_xcrypt_buffer(AES_ctx_t* ctx, uint8_t* buf, size_t length)
+
+{
+	uint8_t buffer[AES_BLOCKLEN];
+
+	size_t i;
+	int bi;
+	for (i = 0, bi = AES_BLOCKLEN; i < length; ++i, ++bi) {
+		if (bi == AES_BLOCKLEN) { /* we need to regen xor compliment in buffer */
+			memcpy(buffer, ctx->Iv, AES_BLOCKLEN);
+			AES_Cipher((AES_state_t*)buffer, ctx->RoundKey);
+			/* Increment Iv and handle overflow */
+			for (bi = (AES_BLOCKLEN - 1); bi >= 0; --bi) {
+				/* inc will overflow */
+				if (ctx->Iv[bi] == 255) {
+					ctx->Iv[bi] = 0; continue;
+				}
+				ctx->Iv[bi] += 1;
+				break;
+			}
+			bi = 0;
+		}
+		buf[i] = (buf[i] ^ buffer[bi]);
+	}
+}
+
+static void AES_CTR_xcrypt_buffer_From(AES_ctx_t* ctx, uint8_t* buf, unsigned int from, size_t length)
+
+{
+	uint8_t buffer[AES_BLOCKLEN];
+
+	size_t i;
+	int bi;
+	// First increment iv till we reach from-1
+	for (i = 0, bi = AES_BLOCKLEN; i < from; ++i, ++bi) {
+		if (bi == AES_BLOCKLEN) { /* we need to regen xor compliment in buffer */
+			if ((i+AES_BLOCKLEN) >= from) {
+				memcpy(buffer, ctx->Iv, AES_BLOCKLEN);
+				AES_Cipher((AES_state_t*)buffer, ctx->RoundKey);
+			}
+			for (bi = (AES_BLOCKLEN - 1); bi >= 0; --bi) {
+				/* inc will overflow */
+				if (ctx->Iv[bi] == 255) {
+					ctx->Iv[bi] = 0; continue;
+				}
+				ctx->Iv[bi] += 1;
+				break;
+			}
+			bi = 0;
+		}
+	}
+	for (i = 0; i < length; ++i, ++bi) {
+		if (bi == AES_BLOCKLEN) { /* we need to regen xor compliment in buffer */
+			memcpy(buffer, ctx->Iv, AES_BLOCKLEN);
+			AES_Cipher((AES_state_t*)buffer, ctx->RoundKey);
+			/* Increment Iv and handle overflow */
+			for (bi = (AES_BLOCKLEN - 1); bi >= 0; --bi) {
+				/* inc will overflow */
+				if (ctx->Iv[bi] == 255) {
+					ctx->Iv[bi] = 0; continue;
+				}
+				ctx->Iv[bi] += 1;
+				break;
+			}
+			bi = 0;
+		}
+		buf[i] = (buf[i] ^ buffer[bi]);
+	}
+}
+
+#ifdef TEST_AES
+void Dump(char *Mess, uint8_t *Buf, int Len)
+
+{
+	char S0[5], S1[5];
+	char Str0[5*15+1], Str1[5*15+1];
+	int N = 15;
+	printf("====================== %s ===========================\n", Mess);
+	Str0[0] = 0; Str1[0] = 0;
+	for (int i=0; i<Len; i++) {
+		char C = Buf[i];
+		if (((i+1)%N)==0) {
+			printf("%s\n", Str0);
+			printf("%s\n", Str1);
+			Str0[0] = 0; Str1[0] = 0;
+		}
+		if (isprint(C)) sprintf(S0, "  %c", C); else sprintf(S0, "???");
+		sprintf(S1, "%3u", Buf[i]);
+		strcat(Str0, S0);
+		strcat(Str1, S1);
+	}
+	printf("%s\n", Str0);
+	printf("%s\n", Str1);
+}
+
+char *Copy(char *From)
+
+{
+	int L = strlen(From)+1;
+	char *S = (char *) malloc(sizeof(char)*L);
+	strcpy(S, From);
+	return S;
+}
+
+int Compare(char *Mess, uint8_t *I0, uint8_t *I1, int From, int Len)
+
+{
+	int Err=0;
+	for (int i=From; i<(From+Len); i++) {
+		if (I0[i] != I1[i]) {
+			Err++;
+			printf("\t%20s: At %4d I0=%3u, I1=%3u\n", Mess, i, I0[i], I1[i]);
+		}
+	}
+	printf("%20s[%4d..%4d]: Check %s\n", Mess, From, From+Len-1, Err?"FAIL":"OK");
+}
+
+#define ASTR	"Ceci est un test d'AES 256 en partant d'un point arbitaire et pour une certaine longeur"
+void TestAES()
+
+{
+	AES_ctx_t Ctx;
+	uint8_t Key[32] = { 0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81,
+                        0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4 };
+	uint8_t Iv[16]  = { 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff };
+	uint8_t Nonce[16]  = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+	char *Input = "1 " ASTR "2 " ASTR "3 " ASTR  "4 " ASTR  "6 " ASTR  "6 " ASTR  "7 " ASTR;
+	char *In = (char *) malloc((strlen(Input)+1)*sizeof(char));
+	strcpy(In, Input);
+
+	AES_init_ctx(&Ctx, Key);
+
+	// Dump("Before xcrypt", In, strlen(Input));
+	char *RefIn = Copy(Input);
+	AES_ctx_set_iv(&Ctx, Iv, Nonce);
+	AES_CTR_xcrypt_buffer_From(&Ctx, (uint8_t*) In, 0, strlen(Input));
+
+	char *RefEnc = Copy(In);
+	AES_ctx_set_iv(&Ctx, Iv, Nonce);
+	AES_CTR_xcrypt_buffer_From(&Ctx, (uint8_t*) In, 0, strlen(Input));
+	
+	Compare("Enc Dec Full", RefIn, In, 0, strlen(Input));
+
+
+	int From = 15, Len = 35;
+
+	for (int i=0; i<28; i++) {
+		strcpy(In, Input);
+		AES_ctx_set_iv(&Ctx, Iv, Nonce);
+		AES_CTR_xcrypt_buffer_From(&Ctx, (uint8_t*) In + From, From, Len);
+		printf("From: %4d, Len: %4d\n", From, Len);
+		Compare("Enc Dec Part1", RefIn,  In, 0, From);
+		Compare("Enc Dec Part2", RefEnc, In, From, Len);
+		Compare("Enc Dec Part3", RefIn,  In, From+Len, strlen(Input)-From-Len);
+		From++;
+	}
+	free(In);
+	free(RefIn);
+	free(RefEnc);
+}
+#endif
+
+static char *EncryptReportError(CompErrorT Err, char *Str, int LineNo)
+
+{
+	if (LineNo>=1) sprintf(Str, "At line %d: ", LineNo); else Str[0] = 0;
+	switch (Err) {
+		case ERR_NOERR: strcat(Str,  "NoError"); break;
+		case ERR_UNEXPECTED_EOF: strcat(Str,  "Unexpected EOF"); break;
+		case ERR_EXPECT_COMP: strcat(Str,  "Expecting Component keyword here"); break;
+		case ERR_EXPECT_SET: strcat(Str,  "Expecting : or = here"); break;
+		case ERR_EXPECT_STRING: strcat(Str,  "Expecting string here"); break;
+		case ERR_EXPECT_VENDOR: strcat(Str,  "Expecting Vendor keyword here"); break;
+		case ERR_EXPECT_SERVER: strcat(Str,  "Expecting Server keyword here"); break;
+		case ERR_EXPECT_KEY: strcat(Str,  "Expecting AES key here in hex format"); break;
+		case ERR_EXPECT_NAME: strcat(Str,  "Expecting name here (sequence of letter and digit)"); break;
+		case ERR_BADKEYLEN: strcat(Str,  "Wrong AES key length"); break;
+		case ERR_KEYNONHEX: strcat(Str,  "Wrong AES key, not an hexadecimal number"); break;
+		case ERR_EXPECT_USER: strcat(Str,  "Expecting User keyword here"); break;
+		case ERR_EXPECT_SECTION: strcat(Str,  "Expecting one of {component, vendor, server, user, key, iv} here"); break;
+		case ERR_EXPECT_COMP_OR_IV: strcat(Str,  "Expecting Component keyword or Iv keyword here"); break;
+		case ERR_WRONG_COMP: strcat(Str, "Already defined component"); break;
+		default: strcat(Str,  "Unknown error"); break;
+	}
+	return Str;
+}
+
+static TokenT NameToToken(char *Str, char *Buf)
+
+{
+	char c;
+	int l=0;
+
+	while (c=Str[l]) Buf[l++] = toupper(c);
+	Buf[l] = 0;
+	if      (strcmp(Buf, "COMPONENT") == 0) return T_COMPONENT;
+	else if (strcmp(Buf, "VENDOR") == 0) return T_VENDOR;
+	else if (strcmp(Buf, "SERVER") == 0) return T_SERVER;
+	else if (strcmp(Buf, "USER") == 0) return T_USER;
+	else if (strcmp(Buf, "KEY") == 0) return T_KEY;
+	else if (strcmp(Buf, "IV") == 0) return T_IV;
+	else if (strcmp(Buf, "VERBOSE") == 0) return T_VERBOSE;
+	else return T_NAME;
+}
+
+static TokenT GetNextToken(FILE *Fi, char *Str, int *LineNo, int *TokLine)
+
+{
+	int c, p=0;
+
+	/* Skip blanks */
+	while (1) {
+		c = fgetc(Fi);
+		if (c==EOF) break;
+		if (c=='/') {	// Comment
+			if ((c = fgetc(Fi)) && (c=='*')) {;
+				while (1) {
+	      				while (((c = fgetc(Fi)) != EOF) && (c != '*')) {
+					}
+					if (c==EOF) return T_UNTERM;	// Unterminated comment
+					c = fgetc(Fi);
+					if (c=='/') {
+						break;
+					}
+					ungetc(c, Fi);
+				}
+			} else if (c=='/') {
+				while (1) {
+	      				while (((c = fgetc(Fi)) != EOF) && (c != '\n')) ;
+					if (c==EOF) return T_UNTERM;	// Unterminated comment
+					break;
+				}
+			} else {
+				ungetc(c, Fi); break;
+			}
+		} else if (!((c==' ') || (c=='\t') || (c=='\n') || (c=='\r'))) break;
+		else if (c=='\n') {
+			*LineNo = *LineNo + 1;
+		}
+
+	}
+	*TokLine = *LineNo;
+	if (c=='"') {
+	      	while (((c = fgetc(Fi)) != EOF) && (c != '"')) {
+			if (c == '\\') c = fgetc(Fi);
+			if (c!=EOF) Str[p++] = c;
+			else break;
+		}
+		if (c==EOF) return T_UNTERM;
+		Str[p] = 0;
+		return T_STRING;
+	} else if (isalnum(c)) {
+		while (isalnum(c)) {
+			Str[p++] = c;
+			c = fgetc(Fi);
+		}
+		ungetc(c, Fi);
+		Str[p] = 0;
+		return T_NAME;
+	} else if (c=='=' || c==':') {
+		return T_SET;
+	} else if (c==';') {
+		return T_SEMI;
+	} else if (c==EOF)
+		return T_EOFT;
+	else {
+		Str[p++] = c;
+		Str[p] = 0;
+		return T_UNKNOWN;
+	}
+}
+
+static char *TokenImage(TokenT t)
+
+{
+	switch (t) {
+		case T_STRING: return "String";
+		case T_NAME: return "Name";
+		case T_EOFT: return "EOF";
+		case T_UNKNOWN: return "Unknown";
+		case T_UNTERM: return "Unterm";
+		case T_SEMI: return "Semi";
+		case T_SET: return "Set";
+		case T_COMPONENT: return "Component";
+		case T_VENDOR: return "Vendor";
+		case T_SERVER: return "Server";
+		case T_KEY: return "Key";
+		case T_USER: return "User";
+		case T_IV: return "Iv";
+		case T_VERBOSE: return "Verbose";
+	}
+}
+       
+static char *TokenContent(TokenT t, char *Str)
+
+{
+	if (t==T_STRING || t==T_NAME || t==T_UNKNOWN) {
+		if (Str[0] == 0) return "<Empty>";
+		else return Str;
+	}else return 0;
+}
+
+static int TokenHasContent(TokenT t)
+
+{
+	return (t==T_STRING || t==T_NAME || t==T_UNKNOWN);
+}
+
+
+
+static int ToHex(char *S)
+
+{
+	char S0 = tolower(S[0]), S1 = tolower(S[1]);
+	int R0, R1;
+	if (S0>='0' && S0<='9') R0 = S0-'0';
+	else if (S0>='a' && S0<='f') R0 = S0 - 'a' + 10;
+	else return -1;
+
+	if (S1>='0' && S1<='9') R1 = S1-'0';
+	else if (S1>='a' && S1<='f') R1 = S1 - 'a' + 10;
+	else return -1;
+
+	return ((R0<<4)|(R1));
+}
+static int CheckKey(char *Str, int Len, unsigned char *Key)
+
+{
+	int L = strlen(Str);
+	if (L != Len*2) return ERR_BADKEYLEN;
+	for (int i=0; i<Len; i++) {
+		int R = ToHex(Str+2*i);
+		if (R==-1) return ERR_KEYNONHEX;
+		Key[i] = R;
+	}
+	return ERR_NOERR;
+}
+
+CryptedComponentT *PushComponent(char *Name, CryptedComponentT **Head)
+
+{
+	CryptedComponentT *Pt, *PtPrev = 0;
+
+	for (Pt = *Head; Pt; Pt = Pt->Next) {
+		if (strcmp(Name, Pt->Name) == 0) break;
+		PtPrev = Pt;
+	}
+	if (Pt) {
+		printf("Component %s is already declared\n", Name);
+		return 0;
+	}
+	Pt = (CryptedComponentT *) malloc(sizeof(CryptedComponentT));
+	Pt->Name = strdup(Name);
+	Pt->Vendor = 0;
+	Pt->Server = 0;
+	Pt->Key = 0;
+	Pt->Iv = 0;
+	Pt->Nonce = 0;
+	Pt->Next = 0;
+	if (PtPrev) PtPrev->Next = Pt;
+	else *Head = Pt;
+	return Pt;
+}
+
+CryptedComponentT *ComponentLookUp(char *Name, CryptedComponentT *HeadComp)
+
+{
+	for (CryptedComponentT *Pt = HeadComp; Pt; Pt = Pt->Next) {
+		if (strcmp(Name, Pt->Name) == 0) {
+			return Pt;
+		}
+	}
+	return 0;
+}
+
+int ComponentNonceUpdate(char *Name, unsigned char *Nonce)
+
+{
+	CryptedComponentT *Comp = ComponentLookUp(Name, EncryptInfo.Components);
+	if (Comp==0) {
+		return 0;
+	}
+
+	Comp->Nonce = (unsigned char *) malloc(sizeof(unsigned char)*AES_BLOCKLEN);
+	for (int i=0; i<AES_BLOCKLEN; i++) Comp->Nonce[i] = Nonce[i];
+	if (EncryptInfo.Verbose) {
+		printf("Updating Component %s with Nonce ", Name);
+		for (int i=0; i<AES_BLOCKLEN; i++) printf("%2x", Nonce[i]);
+		printf("\n");
+	}
+
+	return 1;
+}
+
+int SetOutComponentIV(char *Name)
+
+{
+	int Trace = 0;
+	uint8_t IvOut[AES_KEY_LEN];
+
+	if (EncryptInfo.Components == 0) return 0;	// There are no EncryptInfos
+	CryptedComponentT *OutComp = ComponentLookUp(Name, EncryptInfo.Components);
+
+	int EncryptedIn = 0;
+	for (CryptedComponentT *Pt = EncryptInfo.Components; Pt; Pt = Pt->Next) {
+		if (Pt == OutComp) continue;
+		if (Pt->Iv == 0) return 4;	// A Component without IV
+		if (Trace) {
+			printf("IV Out %20s, %20s, IV=", OutComp?OutComp->Name:"No OUT", Pt->Name);
+			if (Pt->Iv)
+				for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Pt->Iv[i]);
+			else
+				for (int i=0; i<AES_KEY_LEN; i++) printf("??");
+			printf("\n");
+		}
+//		if (Pt->Nonce) {
+			if (EncryptedIn == 0) {
+				for (int i=0; i<AES_KEY_LEN; i++) IvOut[i] = Pt->Iv[i];
+			} else {
+				for (int i=0; i<AES_KEY_LEN; i++) IvOut[i] ^= Pt->Iv[i];
+			}
+			EncryptedIn = 1;
+//		}
+	}
+	if (OutComp) {
+		// Linker out is in EncryptInfo and we have encrypted inputs, set Iv(Out) to exor of all used inputs
+		if (OutComp->Iv == 0) OutComp->Iv = (uint8_t *) malloc(sizeof(uint8_t)*AES_KEY_LEN);
+		for (int i=0; i<AES_KEY_LEN; i++) OutComp->Iv[i] = IvOut[i];
+		return 1;
+	} else if (EncryptedIn) {
+		return 2;	// Linker out is not in EncryptInfo and we have encrypted input, this is an error, link is aborted
+	} else {
+		return 3;	// Linker out is not in EncryptInfo and we have no encrypted input, this is ok
+	}
+}
+
+int ComponentMustBeEncrypted(char *Name)
+
+{
+	CryptedComponentT *Comp = ComponentLookUp(Name, EncryptInfo.Components);
+	// if (Comp) printf("%s must be Encrypted\n", Name);
+	return (Comp != 0);
+}
+
+
+static void DumpComponents(CryptedComponentT *Comp)
+
+{
+	int C = 1;
+	for (CryptedComponentT *Pt=Comp; Pt; Pt = Pt->Next, C++) {
+		// printf("%10s: %s\n", "Name", Pt->Name);
+		printf("[%2d]%6s: %s\n", C, "Name", Pt->Name);
+		printf("%10s: %s\n", "Vendor", Pt->Vendor);
+		printf("%10s: %s\n", "Server", Pt->Server);
+		printf("%10s: %s\n", "User", Pt->UserAuth);
+		printf("%10s: ", "Key");
+		for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Pt->Key[i]);
+		printf("\n");
+		if (Pt->Iv) {
+			printf("%10s: ", "Iv");
+			for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Pt->Iv[i]);
+			printf("\n");
+		} else printf("%10s: %s\n", "Iv", "None");
+		if (Pt->Nonce) {
+			for (int i=0; i<AES_BLOCKLEN; i++) printf("%.2x", Pt->Nonce[i]);
+			printf("%10s: ", "Nonce");
+		} else printf("%10s: %s\n", "Nonce", "None");
+		printf("\n");
+	}
+}
+
+static void DumpKeys(CryptedComponentT *Comp)
+
+{
+	printf("Key: ");
+	for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Comp->Key[i]);
+	printf(" Iv: ");
+	if (Comp->Iv)
+		for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Comp->Iv[i]);
+	else
+		for (int i=0; i<AES_KEY_LEN; i++) printf("??");
+	printf(" Nonce: ");
+	if (Comp->Nonce)
+		for (int i=0; i<AES_BLOCKLEN; i++) printf("%.2x", Comp->Nonce[i]);
+	else
+		for (int i=0; i<AES_BLOCKLEN; i++) printf("??");
+	printf("\n");
+}
+
+static int AcquireComponentIV(CryptedComponentT *Comp)
+
+{
+	if (Comp->Iv == 0) {
+		/* Use infos in pointed components to retrieve the IV from the component owner */
+		if (EncryptInfo.Verbose) {
+			printf("Acquiring IV for Component %s\n", Comp->Name);
+		}
+	}
+	return 0;
+}
+
+int OneSection(FILE *Fi, int *LineNo, int *TokLine, TokenT *Section, char *Content)
+
+{
+	char Buf[ENC_STR_SIZE];
+	TokenT Tok;
+
+	Tok = GetNextToken(Fi, Content, LineNo, TokLine);
+	if (Tok == T_EOFT) return ERR_NOERR_EOF;
+	if (Tok==T_NAME) Tok = NameToToken(Content, Buf);
+	if (Tok==T_VERBOSE) {
+		EncryptInfo.Verbose = 1;
+		Tok = GetNextToken(Fi, Content, LineNo, TokLine);
+		if (Tok == T_EOFT) return ERR_NOERR_EOF;
+		if (Tok==T_NAME) Tok = NameToToken(Content, Buf);
+	}
+	if (!(Tok == T_COMPONENT || Tok == T_VENDOR || Tok == T_SERVER || Tok == T_USER || Tok == T_KEY || Tok == T_IV)) return ERR_EXPECT_SECTION;
+	*Section = Tok;
+
+	Tok = GetNextToken(Fi, Content, LineNo, TokLine);
+	if (Tok == T_EOFT) return ERR_UNEXPECTED_EOF;
+	if (Tok!=T_SET) return ERR_EXPECT_SET;
+
+	Tok = GetNextToken(Fi, Content, LineNo, TokLine);
+	if (Tok == T_EOFT) return ERR_UNEXPECTED_EOF;
+	if (Tok!=T_STRING) return ERR_EXPECT_STRING;
+
+	return ERR_NOERR;
+}
+
+static int ProcessComponents(FILE *Fi, int *LineNo, int *TokLine, CryptedComponentT **Comp, CryptedComponentT **Head)
+
+{
+	char Str[ENC_STR_SIZE], Buf[ENC_STR_SIZE];
+	TokenT Section;
+	int Trace = 0;
+	int Err;
+       
+	// Component = "...."
+	Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+	if (Err) return Err;
+	if (Section != T_COMPONENT) return ERR_EXPECT_COMP;
+	if (Trace) printf("Component : %s\n", TokenContent(Section, Str));
+	*Comp = PushComponent(Str, Head);
+	if (*Comp == 0) return ERR_WRONG_COMP;
+
+	while (1) {
+		// Vendor = "...."
+		Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+		if (Err) return Err;
+		if (Section != T_VENDOR) return ERR_EXPECT_VENDOR;
+		if (Trace) printf("Vendor    : %s\n", TokenContent(Section, Str));
+		(*Comp)->Vendor = strdup(Str);
+	
+		// Server = "..."
+		Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+		if (Err) return Err;
+		if (Section != T_SERVER) return ERR_EXPECT_SERVER;
+		if (Trace) printf("Server    : %s\n", TokenContent(Section, Str));
+		(*Comp)->Server = strdup(Str);
+	
+		// User = "..."
+		Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+		if (Err) return Err;
+		if (Section != T_USER) return ERR_EXPECT_USER;
+		if (Trace) printf("User    : %s\n", TokenContent(Section, Str));
+		(*Comp)->UserAuth = strdup(Str);
+	
+		// Key = "HexNum"
+		Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+		if (Err) return Err;
+		if (Section != T_KEY) return ERR_EXPECT_KEY;
+		unsigned char *Key = (unsigned char *) malloc(sizeof(unsigned char)*AES_KEY_LEN);
+		int Status = CheckKey(Str, AES_KEY_LEN, Key);
+		if (Status) {
+			free(Key); return Status;
+		}
+		if (Trace) {
+			for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Key[i]);
+			printf(">\n");
+		}
+		(*Comp)->Key = Key;
+		(*Comp)->Iv = 0;
+		(*Comp)->Nonce = 0;
+	
+		// Component or Iv = "HexNum"  Optional
+		Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+		if (Err) return Err;
+		if (Section == T_COMPONENT) {
+			if (Trace) printf("Component : %s\n", TokenContent(Section, Str));
+			*Comp = PushComponent(Str, Head);
+		} else if (Section == T_IV) {
+			unsigned char *Iv = (unsigned char *) malloc(sizeof(unsigned char)*AES_KEY_LEN);
+			int Status = CheckKey(Str, AES_KEY_LEN, Iv);
+			if (Status) {
+				free(Iv); return Status;
+			}
+			if (Trace) {
+				for (int i=0; i<AES_KEY_LEN; i++) printf("%.2x", Iv[i]);
+				printf(">\n");
+			}
+			(*Comp)->Iv = Iv;
+
+			Err = OneSection(Fi, LineNo, TokLine, &Section, Str);
+			if (Err) return Err;
+			if (Section != T_COMPONENT) return ERR_EXPECT_COMP;
+			if (Trace) printf("Component : %s\n", TokenContent(Section, Str));
+			*Comp = PushComponent(Str, Head);
+			if (*Comp == 0) return ERR_WRONG_COMP;
+		} else return ERR_EXPECT_COMP_OR_IV;
+	}
+	return ERR_NOERR;
+}
+
+static char *EncryptModeImage(int Mode)
+
+{
+	switch (Mode) {
+		case 0: return "ASM";
+		case 1: return "LINKER";
+		case 2: return "DUMP";
+		default: return "Unknown";
+	}
+}
+
+int ProcessEncryptionInfos(char *InfoName, int Mode)
+
+{
+	int Trace = 1;
+	FILE *Fi;
+
+	if (EncryptInfo.Verbose)
+		printf("ENTERING ProcessEncryptionInfos, %s\n", EncryptModeImage(Mode));
+	if (EncryptInfo.Components) {
+		if (EncryptInfo.Verbose) printf("Encryption infos %s already loaded\n", InfoName);
+		return 1;
+	}
+	Fi = fopen(InfoName, "r");
+	if (Fi == NULL) {
+		printf("-mencrypt-info=%s, failed to open %s\n", InfoName, InfoName);
+		return 0;
+	}
+
+	int C, LineNo = 1, TokLine = 1;
+	CryptedComponentT *HeadComp = 0, *Comp;
+	C = ProcessComponents(Fi, &LineNo, &TokLine, &Comp, &HeadComp);
+	if (C==ERR_NOERR || C==ERR_NOERR_EOF) {
+		 if (EncryptInfo.Verbose) printf("Encrypt Infos %s Parsing OK\n", InfoName);
+	} else {
+		char ErrStr[256];
+		EncryptReportError(C, ErrStr, TokLine);
+		printf("Aborting. %s\n", ErrStr);
+		return 0;
+	}
+	if (EncryptInfo.Verbose) DumpComponents(HeadComp);
+	EncryptInfo.Components = HeadComp;
+	fclose(Fi);
+	return 1;
+}
+
+static void EncryptObjSection(CryptedComponentT *Comp, unsigned char *InBuffer, unsigned int Pos, bfd_size_type Len)
+
+{
+	AES_ctx_t Ctx;
+
+	AES_init_ctx(&Ctx, Comp->Key);
+	AES_ctx_set_iv(&Ctx, Comp->Iv, Comp->Nonce);
+	AES_CTR_xcrypt_buffer_From(&Ctx, (uint8_t*) InBuffer, Pos, Len);
+}
+
+void SetEncryptMode(int Mode)
+
+{
+	// Mode=0 ASM, Mode=1 LINKER, Mode=2 DUMP
+	EncryptInfo.Mode = Mode;
+}
+
+int EncryptVerbose()
+
+{
+	return (EncryptInfo.Verbose);
+}
+
+void SetEncryptActiveComponent(char *Name)
+
+{
+	CryptedComponentT *Comp = ComponentLookUp(Name, EncryptInfo.Components);
+	EncryptInfo.OutComponent = Comp;
+}
+
+/************************************************************************/
+
+
+
 
 /* These symbols are global, not specific to any BFD.  Therefore, anything
    that tries to change them is broken, and should be repaired.  */
@@ -1467,6 +2493,63 @@ bfd_set_section_size (bfd *abfd, sec_ptr ptr, bfd_size_type val)
   return TRUE;
 }
 
+static int IsTextSection(bfd *abfd, sec_ptr section, int *IsEncrypted)
+
+{
+
+	if ((section->flags & SEC_CODE)) {
+		if (IsEncrypted) *IsEncrypted = ((abfd->flags & BFD_ENCRYPTED) != 0);
+		// printf("In %s, found text section %s, bfd flags: %x, Encrypt: %x\n", bfd_get_filename (abfd), section->name, abfd->flags, BFD_ENCRYPTED);
+		return 1;
+	}
+	return 0;
+}
+
+static void DumpSecFlags(sec_ptr section)
+
+{
+	char Str[256];
+	int Cpt = 0;
+	int N = 5;
+
+	Str[0] = 0;
+	sprintf(Str, "\t\t");
+
+	if ((section->flags & SEC_ALLOC) != 0) { strcat(Str, " Alloc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_LOAD) != 0) { strcat(Str, " Load"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_RELOC) != 0) { strcat(Str, " Reloc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_READONLY) != 0) { strcat(Str, " ReadOnly"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_CODE) != 0) { strcat(Str, " Code"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_DATA) != 0) { strcat(Str, " Data"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_ROM) != 0) { strcat(Str, " Rom"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_CONSTRUCTOR) != 0) { strcat(Str, " Construct"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_HAS_CONTENTS) != 0) { strcat(Str, " HasCont"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_NEVER_LOAD) != 0) { strcat(Str, " NeverLoad"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_THREAD_LOCAL) != 0) { strcat(Str, " ThreadLoc"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_HAS_GOT_REF) != 0) { strcat(Str, " HasGotRef"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_IS_COMMON) != 0) { strcat(Str, " IsCommon"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_DEBUGGING) != 0) { strcat(Str, " Debug"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_IN_MEMORY) != 0) { strcat(Str, " InMem"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_EXCLUDE) != 0) { strcat(Str, " Exclude"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_SORT_ENTRIES) != 0) { strcat(Str, " Sort"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_LINK_ONCE) != 0) { strcat(Str, " LinkOnce"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_LINK_DUPLICATES_ONE_ONLY) != 0) { strcat(Str, " LinkDupOne"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_LINK_DUPLICATES_SAME_SIZE) != 0) { strcat(Str, " LinkDupSS"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_LINKER_CREATED) != 0) { strcat(Str, " LkCreated"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_KEEP) != 0) { strcat(Str, " Keep"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_SMALL_DATA) != 0) { strcat(Str, " SmallData"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_MERGE) != 0) { strcat(Str, " Merge"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_STRINGS) != 0) { strcat(Str, " Strings"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_GROUP) != 0) { strcat(Str, " Group"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_ELF_REVERSE_COPY) != 0) { strcat(Str, " RevCopy"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_ELF_COMPRESS) != 0) { strcat(Str, " Compress"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_ELF_RENAME) != 0) { strcat(Str, " Rename"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_MEP_VLIW) != 0) { strcat(Str, " MAGIC"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_COFF_NOREAD) != 0) { strcat(Str, " CoffNoRd"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if ((section->flags & SEC_ELF_PURECODE) != 0) { strcat(Str, " PureCode"); Cpt++; if (Cpt>N) {printf("%s\n", Str); Cpt=0; Str[0] = 0;} }
+	if (Cpt) printf("%s\n", Str);
+}
+
 /*
 FUNCTION
 	bfd_set_section_contents
@@ -1503,6 +2586,18 @@ bfd_set_section_contents (bfd *abfd,
 {
   bfd_size_type sz;
 
+  int Trace = 0;
+  CryptedComponentT *Comp = 0;
+  int IsEncrypted;
+  if (IsTextSection(abfd, section, &IsEncrypted)) {
+	if (IsEncrypted) Comp = ComponentLookUp(bfd_get_filename (abfd), EncryptInfo.Components);
+	/*
+	printf("\tSetting content to bfd %s (file format %s), section %s. Offset: %d, Count: %d%s%s\n",
+		bfd_get_filename (abfd), abfd->xvec->name, section->name, (int) offset, (int) count,
+		IsEncrypted?" ENCRYPTED":"", IsEncrypted?(Comp?" FOUND IT":" NOT FOUND"):"");
+	*/
+	if (Comp) AcquireComponentIV(Comp);
+  }
   if (!(bfd_get_section_flags (abfd, section) & SEC_HAS_CONTENTS))
     {
       bfd_set_error (bfd_error_no_contents);
@@ -1530,12 +2625,34 @@ bfd_set_section_contents (bfd *abfd,
       && location != section->contents + offset)
     memcpy (section->contents + offset, location, (size_t) count);
 
-  if (BFD_SEND (abfd, _bfd_set_section_contents,
-		(abfd, section, location, offset, count)))
-    {
-      abfd->output_has_begun = TRUE;
-      return TRUE;
-    }
+  if (Comp) {
+	if (EncryptInfo.Verbose) {
+		printf("\tSetting Encrypted section %s from bfd %s. Offset: %d, Count: %d%s%s%s\n",
+			section->name, bfd_get_filename (abfd), (int) offset, (int) count,
+			Comp->Key?" (Key)":" (No Key)", Comp->Iv?" (Iv)":" (No Iv)", Comp->Nonce?" (Nonce)":" (No Nonce)");
+		if (Trace) DumpKeys(Comp);
+	}
+  	void *CopyIn = (void *) malloc (count);
+    	memcpy (CopyIn, location, (size_t) count);
+	/* Encrypt CopyIn */
+	EncryptObjSection(Comp, (unsigned char *) CopyIn, offset, count);
+
+  	if (BFD_SEND (abfd, _bfd_set_section_contents,
+			(abfd, section, CopyIn, offset, count)))
+    	{
+      		abfd->output_has_begun = TRUE;
+		free(CopyIn);
+      		return TRUE;
+    	}
+	free(CopyIn);
+  } else {
+  	if (BFD_SEND (abfd, _bfd_set_section_contents,
+			(abfd, section, location, offset, count)))
+    	{
+      		abfd->output_has_begun = TRUE;
+      		return TRUE;
+    	}
+  }
 
   return FALSE;
 }
@@ -1570,6 +2687,19 @@ bfd_get_section_contents (bfd *abfd,
 			  bfd_size_type count)
 {
   bfd_size_type sz;
+  int Trace = 0;
+  CryptedComponentT *Comp = 0;
+
+  int IsEncrypted;
+  if (IsTextSection(abfd, section, &IsEncrypted)) {
+	if (IsEncrypted) Comp = ComponentLookUp(bfd_get_filename (abfd), EncryptInfo.Components);
+	if (Comp) AcquireComponentIV(Comp);
+
+	/* printf("\tGetting from bfd %s (file format %s), section %s. Offset: %d, Count: %d%s%s\n",
+		bfd_get_filename (abfd), abfd->xvec->name, section->name, (int) offset, (int) count,
+		IsEncrypted?" ENCRYPTED":"", IsEncrypted?(Comp?" FOUND IT":" NOT FOUND"):"");
+	*/
+  }
 
   if (section->flags & SEC_CONSTRUCTOR)
     {
@@ -1616,8 +2746,26 @@ bfd_get_section_contents (bfd *abfd,
       return TRUE;
     }
 
-  return BFD_SEND (abfd, _bfd_get_section_contents,
-		   (abfd, section, location, offset, count));
+  if (Comp) {
+	if (EncryptInfo.Verbose) {
+		printf("\tGetting Encrypted section %s from bfd %s. Offset: %d, Count: %d%s%s%s\n",
+			section->name, bfd_get_filename (abfd), (int) offset, (int) count,
+			Comp->Key?" (Key)":" (No Key)", Comp->Iv?" (Iv)":" (No Iv)", Comp->Nonce?" (Nonce)":" (No Nonce)");
+		if (Trace) DumpKeys(Comp);
+	}
+  	void *CopyOut = (void *) malloc (count);
+	bfd_boolean Status = BFD_SEND (abfd, _bfd_get_section_contents,
+		   		       (abfd, section, CopyOut, offset, count));
+
+	/* Decrypt CopyOut */
+	EncryptObjSection(Comp, (unsigned char *) CopyOut, offset, count);
+    	memcpy (location, CopyOut, (size_t) count);
+	free(CopyOut);
+	return Status;
+  } else {
+  	return BFD_SEND (abfd, _bfd_get_section_contents,
+		   	(abfd, section, location, offset, count));
+  }
 }
 
 /*

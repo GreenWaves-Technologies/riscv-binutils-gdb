@@ -3336,6 +3336,8 @@ get_machine_flags (unsigned e_flags, unsigned e_machine)
 	      strcat (buf, ", quad-float ABI");
 	      break;
 	    }
+	  if (e_flags & EF_RISCV_ENCRYPTED)
+	    strcat (buf, ", Encrypted");
 	  break;
 
 	case EM_SH:

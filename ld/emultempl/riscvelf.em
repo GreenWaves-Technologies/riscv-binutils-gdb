@@ -24,6 +24,8 @@ fragment <<EOF
 #include "ldctor.h"
 #include "elf/riscv.h"
 #include "elfxx-riscv.h"
+#include <stdlib.h>
+#include <time.h>
 
 #define _WITH_PULP_CHIP_INFO_FUNCT_
 #include "../../riscv-gcc/gcc/config/riscv/riscv-opts.h"
@@ -34,8 +36,15 @@ static int TRACE = 0;
 static int Warn_Chip_Info = 0;
 static int Error_Chip_Info = 0;
 
-static struct Pulp_Target_Chip Pulp_Chip = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1};
-static struct Pulp_Target_Chip DefChipInfo = {PULP_CHIP_NONE, PULP_NONE, 0, 1, 1024*256, 64*1024, 0};
+static struct Pulp_Target_Chip Pulp_Chip = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1, {0}};
+static struct Pulp_Target_Chip DefChipInfo = {PULP_CHIP_NONE, PULP_NONE, 0, 1, 1024*256, 64*1024, 0, {0}};
+
+int ProcessEncryptionInfos(char *InfoName, int Mode);
+int ComponentNonceUpdate(char *Name, unsigned char *Nonce);
+int SetOutComponentIV(char *Name);
+void SetEncryptMode(int Mode);
+int EncryptVerbose();
+void SetEncryptActiveComponent(char *Name);
 
 static void
 riscv_elf_after_open(void)
@@ -47,6 +56,12 @@ riscv_elf_after_open(void)
         gld${EMULATION_NAME}_after_open ();
 
         for (b = link_info.input_bfds; b; b = b->link.next) {
+		Elf_Internal_Ehdr *i_eh = elf_elfheader(b);
+		if (i_eh && (i_eh->e_flags & EF_RISCV_ENCRYPTED)) {
+			b->flags |= BFD_ENCRYPTED;
+			if (TRACE) fprintf(stderr, "BFD %s contains encrypted sections\n", b->filename);
+		}
+
                 if ((s = bfd_get_section_by_name (b, ".pulp.export"))) {
                         unsigned int i;
                         char *Content = xmalloc(s->size);
@@ -120,6 +135,7 @@ static int MergeChipInfo(struct Pulp_Target_Chip *Cur, struct Pulp_Target_Chip *
 }
 
 
+
 static void
 riscv_elf_before_allocation (void)
 {
@@ -127,7 +143,7 @@ riscv_elf_before_allocation (void)
 	char CharBuff[1024];
 	bfd *b, *first_b = NULL;
 	struct bfd_section *s, *first_s = NULL;
-	struct Pulp_Target_Chip ChipInfo = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1};
+	struct Pulp_Target_Chip ChipInfo = {PULP_CHIP_NONE, PULP_NONE, -1, -1, -1, -1, -1, {0}};
 	struct Pulp_Target_Chip CurChipInfo;
 	int Error = 0;
 	int NoMerge = 0;
@@ -137,6 +153,9 @@ riscv_elf_before_allocation (void)
 
 	if (TRACE) fprintf(stderr, "Linker Passed Config: %s\n", PulpChipInfoImage(&Pulp_Chip, CharBuff));
 
+	SetEncryptActiveComponent(bfd_get_filename(link_info.output_bfd));
+
+	int EncryptedInput = 0;
 	for (b = link_info.input_bfds; b; b = b->link.next) {
 		if (!first_b) first_b = b;
 		s = bfd_get_section_by_name (b, ".Pulp_Chip.Info");
@@ -151,6 +170,7 @@ riscv_elf_before_allocation (void)
 						einfo(_("Incorrect .Pulp_Chip.Info section found in %s\n"), b->filename);
 					if (Error_Chip_Info) Error++;
 				}
+				EncryptedInput |= ComponentNonceUpdate(bfd_get_filename(b), CurChipInfo.Nonce);
 
 				if (TRACE)
 					fprintf(stderr, "Found Chip Info Section in In BFD %s: %s\n",
@@ -208,6 +228,22 @@ riscv_elf_before_allocation (void)
 
 		s->flags &= ~SEC_EXCLUDE;
 		s->flags |= SEC_IN_MEMORY;
+  		/* Generate a random sequence for the nonce */
+		{
+			struct timespec t;
+			clock_gettime(CLOCK_MONOTONIC, &t);
+			srand((unsigned) t.tv_nsec);
+
+			for (int i=0; i<16; i++) ChipInfo.Nonce[i] = rand();
+			ComponentNonceUpdate(bfd_get_filename(link_info.output_bfd), ChipInfo.Nonce);
+			/*
+			if (EncryptVerbose()) {
+				printf("Setting Nonce for %s = ", bfd_get_filename(link_info.output_bfd));
+				for (int i=0; i<16; i++) printf("%2x", ChipInfo.Nonce[i]);
+				printf("\n");
+			}
+			*/
+  		}
 
 		data = xmalloc(512);
 		data = PulpChipInfoImage(&ChipInfo, data);
@@ -374,6 +410,17 @@ gld${EMULATION_NAME}_after_allocation (void)
   PulpRegisterSymbolEntry(entry_symbol, entry_from_cmdline);
 }
 
+static void EncryptSection(bfd *abfd, asection *section, void *dummy ATTRIBUTE_UNUSED)
+
+{
+	if (EncryptInfo == 0) return;
+
+        if (((section->flags & SEC_CODE) == 0) || ((section->flags & SEC_HAS_CONTENTS) == 0)) return;
+
+        elf_elfheader (abfd)->e_flags |= EF_RISCV_ENCRYPTED;
+        abfd->flags |= BFD_ENCRYPTED;
+}
+
 static void
 gld${EMULATION_NAME}_finish (void)
 {
@@ -386,6 +433,38 @@ gld${EMULATION_NAME}_finish (void)
                                        (int) s->size, (int) s->entsize, (s->contents)?"Yes":"No" );
         }
 
+	int EncryptOut = SetOutComponentIV(bfd_get_filename(link_info.output_bfd));
+
+	if (EncryptVerbose()) {
+		printf("Set Out IV for %s, Status is %d\n", bfd_get_filename(link_info.output_bfd), EncryptOut);
+	}
+
+	switch (EncryptOut) {
+		case 0:	// No components
+			if (EncryptInfo) einfo(_("%F Linker aborted. Encryption infos found but empty or incorrect %s\n"), EncryptInfo);
+			break;
+		case 1: // Components and out are ok
+			break;
+		case 2: // Linker out is not in EncryptInfo and we have encrypted input
+			einfo(_("%F Linker aborted. Some inputs are encrypted and no encryption infos found for output %s\n"), bfd_get_filename (link_info.output_bfd));
+			break;
+		case 3: // Linker out is not in EncryptInfo and we have no encrypted input, this is ok
+			break;
+		case 4: // A Component without IV
+			einfo(_("%F Linker aborted. At least one component in Encrypt Infos has no IV\n"));
+			break;
+		default: // Unknown error
+			einfo(_("%F Linker aborted. Unknown error from SetOutComponentIV: %d\n"), EncryptOut);
+	}
+	if (link_info.output_bfd && (EncryptOut == 1)) {
+		const char *TargName = bfd_get_target (link_info.output_bfd);
+		/*
+		if (EncryptVerbose()) {
+			printf("Linker finish on %s, Target is %s\n", bfd_get_filename (link_info.output_bfd), TargName);
+		}
+		*/
+		bfd_map_over_sections(link_info.output_bfd, EncryptSection, NULL);
+	}
         finish_default ();
 }
 
@@ -526,6 +605,7 @@ PARSE_AND_LIST_PROLOGUE='
 #define OPTION_ERROR_CHIP_INFO  309
 #define OPTION_COMP_LINK        310
 #define OPTION_DUMP_IE_SECT     311
+#define OPTION_ENCRYPT_INFO     312
 '
 PARSE_AND_LIST_LONGOPTS='
   { "mchip", required_argument, NULL, OPTION_CHIP},
@@ -539,20 +619,22 @@ PARSE_AND_LIST_LONGOPTS='
   { "mEci", no_argument, NULL, OPTION_ERROR_CHIP_INFO},
   { "mComp", no_argument, NULL, OPTION_COMP_LINK},
   { "mDIE", required_argument, NULL, OPTION_DUMP_IE_SECT},
+  { "mencrypt-info", required_argument, NULL, OPTION_ENCRYPT_INFO},
 '
 
 PARSE_AND_LIST_OPTIONS='
-  fprintf (file, _("  -mchip=<name>       Set targeted Pulp chip to <name>\n"));
-  fprintf (file, _("  -march=<name>       Set targeted Pulp processor to ISA <name>\n"));
-  fprintf (file, _("  -PE=<value>         Set Pulp number of cluster processors to <value>\n"));
-  fprintf (file, _("  -FC=<value>         If value != 0 targeted Pulp chip has a fabric controller\n"));
-  fprintf (file, _("  -L2=<value>         Set targeted Pulp chip L2 memory size to <value>\n"));
-  fprintf (file, _("  -mL1Cl=<value>      Set targeted Pulp chip L1 cluster memory size to <value>\n"));
-  fprintf (file, _("  -mL1Fc=<value>      Set targeted Pulp chip L1 fabric controler memry size to <value>\n"));
-  fprintf (file, _("  -mWci               Emit warning when no chip info is found in a bfd or when non mergeable chip info sections are detected\n"));
-  fprintf (file, _("  -mEci               Emit warning and abort when no chip info is found in a bfd or when non mergeable chip info sections are detected\n"));
-  fprintf (file, _("  -mComp              Link a component, export section contains offset relative to segment and not absolute addresses\n"));
-  fprintf (file, _("  -mDIE=<value>       Dump import/export sections. 1: Dump only, 2: Sections in C only, 3: Both\n"));
+  fprintf (file, _("  -mchip=<name>         Set targeted Pulp chip to <name>\n"));
+  fprintf (file, _("  -march=<name>         Set targeted Pulp processor to ISA <name>\n"));
+  fprintf (file, _("  -PE=<value>           Set Pulp number of cluster processors to <value>\n"));
+  fprintf (file, _("  -FC=<value>           If value != 0 targeted Pulp chip has a fabric controller\n"));
+  fprintf (file, _("  -L2=<value>           Set targeted Pulp chip L2 memory size to <value>\n"));
+  fprintf (file, _("  -mL1Cl=<value>        Set targeted Pulp chip L1 cluster memory size to <value>\n"));
+  fprintf (file, _("  -mL1Fc=<value>        Set targeted Pulp chip L1 fabric controler memry size to <value>\n"));
+  fprintf (file, _("  -mWci                 Emit warning when no chip info is found in a bfd or when non mergeable chip info sections are detected\n"));
+  fprintf (file, _("  -mEci                 Emit warning and abort when no chip info is found in a bfd or when non mergeable chip info sections are detected\n"));
+  fprintf (file, _("  -mComp                Link a component, export section contains offset relative to segment and not absolute addresses\n"));
+  fprintf (file, _("  -mDIE=<value>         Dump import/export sections. 1: Dump only, 2: Sections in C only, 3: Both\n"));
+  fprintf (file, _("  -mencrypt-info=<name> Read module encryption info from file <name>\n"));
 '
 
 PARSE_AND_LIST_ARGS_CASES='
@@ -589,6 +671,14 @@ PARSE_AND_LIST_ARGS_CASES='
    case OPTION_DUMP_IE_SECT:
      DumpImportExportSections = atoi(optarg);
      break;
+   case OPTION_ENCRYPT_INFO:
+     {
+     EncryptInfo = strdup(optarg);
+     SetEncryptMode(1);
+     ProcessEncryptionInfos(EncryptInfo, 1);
+     if (EncryptVerbose()) printf("LINK encrypted with %s\n", EncryptInfo?EncryptInfo:"<NULL>");
+     break;
+     }
 '
 LDEMUL_AFTER_OPEN=riscv_elf_after_open
 LDEMUL_BEFORE_ALLOCATION=riscv_elf_before_allocation

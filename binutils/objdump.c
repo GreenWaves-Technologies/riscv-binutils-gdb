@@ -74,6 +74,9 @@
 #define	BYTES_IN_WORD	32
 #include "aout/aout64.h"
 
+#define _WITH_PULP_CHIP_INFO_FUNCT_
+#include "../../riscv-gcc/gcc/config/riscv/riscv-opts.h"
+
 /* Exit status.  */
 static int exit_status = 0;
 
@@ -296,7 +299,8 @@ enum option_values
     OPTION_ADJUST_VMA,
     OPTION_DWARF_DEPTH,
     OPTION_DWARF_CHECK,
-    OPTION_DWARF_START
+    OPTION_DWARF_START,
+    OPTION_ENCRYPT
   };
 
 static struct option long_options[]=
@@ -348,6 +352,7 @@ static struct option long_options[]=
   {"dwarf-depth",      required_argument, 0, OPTION_DWARF_DEPTH},
   {"dwarf-start",      required_argument, 0, OPTION_DWARF_START},
   {"dwarf-check",      no_argument, 0, OPTION_DWARF_CHECK},
+  {"mencrypt-info", required_argument, NULL, OPTION_ENCRYPT},
   {0, no_argument, 0, 0}
 };
 
@@ -2826,7 +2831,7 @@ dump_bfd_header (bfd *abfd)
   printf (_("architecture: %s, "),
 	  bfd_printable_arch_mach (bfd_get_arch (abfd),
 				   bfd_get_mach (abfd)));
-  printf (_("flags 0x%08x:\n"), abfd->flags & ~BFD_FLAGS_FOR_BFD_USE_MASK);
+  printf (_("flags 0x%08x (0x%08x):\n"), abfd->flags & ~BFD_FLAGS_FOR_BFD_USE_MASK, abfd->flags);
 
 #define PF(x, y)    if (abfd->flags & x) {printf("%s%s", comma, y); comma=", ";}
   PF (HAS_RELOC, "HAS_RELOC");
@@ -3404,12 +3409,57 @@ adjust_addresses (bfd *abfd ATTRIBUTE_UNUSED,
 
 /* Dump selected contents of ABFD.  */
 
+int SetOutComponentIV(char *Name);
+int ComponentNonceUpdate(char *Name, unsigned char *Nonce);
+int EncryptVerbose();
+
 static void
 dump_bfd (bfd *abfd)
 {
   /* If we are adjusting section VMA's, change them all now.  Changing
      the BFD information is a hack.  However, we must do it, or
      bfd_find_nearest_line will not do the right thing.  */
+  int IsEncrypted = 0, IsExec = 0;
+
+  // EF_RISCV_ENCRYPTED = 0x0008
+  if ((elf_elfheader (abfd)->e_machine == EM_RISCV)) {
+	if ((elf_elfheader (abfd)->e_flags & 0x0008) != 0) IsEncrypted = 1;
+	if ((elf_elfheader (abfd)->e_type) == ET_EXEC) IsExec = 1;
+  }
+
+  if (EncryptVerbose()) {
+	printf("BFD %s is %sencrypted %s\n", bfd_get_filename (abfd), (IsEncrypted==0)?"Not ":"", IsExec?"EXEC":"OBJ");
+  }
+  if (IsEncrypted) {
+	  struct bfd_section *s;
+	  s = bfd_get_section_by_name (abfd, ".Pulp_Chip.Info");
+	  if (s) {
+		long size = s->size;
+		char *Pt, *buf = xmalloc (size);
+		bfd_get_section_contents (abfd, s, buf, 0, size);
+		if (size>0) {
+			struct Pulp_Target_Chip CurChipInfo;
+			// #define PULPINFO_NAMESZ 10
+			Pt = buf + 12 + 10;
+			if (ExtractChipInfo(Pt, &CurChipInfo) == 0) {
+	  			fatal (_("Incorrect .Pulp_Chip.Info section found in %s"), bfd_get_filename(abfd));
+			}
+			if (ComponentNonceUpdate(bfd_get_filename(abfd), CurChipInfo.Nonce) == 0) {
+	  			fatal (_("Failed to identify %s in encrypted infos"), bfd_get_filename(abfd));
+			}
+			if (IsExec) {
+				int Status = SetOutComponentIV(bfd_get_filename(abfd));
+				if (EncryptVerbose()) {
+					printf("Set Out IV for %s, Status is %d\n", bfd_get_filename(abfd), Status);
+				}
+			}
+			abfd->flags |= BFD_ENCRYPTED;
+		}
+	  } else {
+	 	fatal (_("No .Pulp_Chip.Info section found in %s"), bfd_get_filename(abfd));
+	  }
+  }
+
   if (adjust_section_vma != 0)
     {
       bfd_boolean has_reloc = (abfd->flags & HAS_RELOC);
@@ -3637,6 +3687,22 @@ display_file (char *filename, char *target)
 
   bfd_close (file);
 }
+
+int ProcessEncryptionInfos(char *InfoName, int Mode);
+void SetEncryptMode(int Mode);
+int EncryptVerbose();
+
+static void
+RiscvEncryptDump(char *filename)
+
+{
+	if (filename) {
+		SetEncryptMode(2);
+        	ProcessEncryptionInfos(filename, 0);
+        	if (EncryptVerbose()) printf("OBJDUMP encrypted with %s\n", filename);
+	}
+}
+
 
 int
 main (int argc, char **argv)
@@ -3897,6 +3963,9 @@ main (int argc, char **argv)
 	case 'H':
 	  usage (stdout, 0);
 	  /* No need to set seenflag or to break - usage() does not return.  */
+	case OPTION_ENCRYPT:
+	  RiscvEncryptDump(optarg);
+	  break;
 	default:
 	  usage (stderr, 1);
 	}

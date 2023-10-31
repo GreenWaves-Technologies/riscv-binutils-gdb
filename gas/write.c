@@ -1816,6 +1816,8 @@ create_obj_attrs_section (void)
 
 /* Write the object file.  */
 
+void EncryptSection(bfd *abfd, asection *section, void *dummy);
+
 void
 write_object_file (void)
 {
@@ -2227,6 +2229,8 @@ write_object_file (void)
     }
 
   bfd_map_over_sections (stdoutput, write_contents, (char *) 0);
+  /* GAP specific */
+  bfd_map_over_sections(stdoutput, EncryptSection, NULL);
 }
 
 #ifdef TC_GENERIC_RELAX_TABLE

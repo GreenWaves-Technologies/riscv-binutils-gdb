@@ -1450,10 +1450,12 @@ CryptedComponentT *PushComponent(char *Name, CryptedComponentT **Head)
 CryptedComponentT *ComponentLookUp(char *Name, CryptedComponentT *HeadComp)
 
 {
+	unsigned int Ln = strlen(Name);
 	for (CryptedComponentT *Pt = HeadComp; Pt; Pt = Pt->Next) {
-		if (strcmp(Name, Pt->Name) == 0) {
-			return Pt;
-		}
+		unsigned int Lc = strlen(Pt->Name);
+		if (Ln>Lc) { // Matches the end of Name and checks that immediate predecessor is a directory separator
+			if (strcmp(Name + (Ln-Lc), Pt->Name) == 0 && (Name[Ln-Lc-1] == '/' || Name[Ln-Lc-1] == '\\')) return Pt;
+		} else if (Ln==Lc && strcmp(Name, Pt->Name) == 0) return Pt;
 	}
 	return 0;
 }
@@ -1469,7 +1471,7 @@ int ComponentNonceUpdate(char *Name, unsigned char *Nonce)
 	Comp->Nonce = (unsigned char *) malloc(sizeof(unsigned char)*AES_BLOCKLEN);
 	for (int i=0; i<AES_BLOCKLEN; i++) Comp->Nonce[i] = Nonce[i];
 	if (EncryptInfo.Verbose) {
-		printf("Updating Component %s with Nonce ", Name);
+		printf("Updating Obj: %s, Comp: %s with Nonce ", Name, Comp->Name);
 		for (int i=0; i<AES_BLOCKLEN; i++) printf("%2x", Nonce[i]);
 		printf("\n");
 	}
@@ -2627,8 +2629,8 @@ bfd_set_section_contents (bfd *abfd,
 
   if (Comp) {
 	if (EncryptInfo.Verbose) {
-		printf("\tSetting Encrypted section %s from bfd %s. Offset: %d, Count: %d%s%s%s\n",
-			section->name, bfd_get_filename (abfd), (int) offset, (int) count,
+		printf("\tSetting Encrypted section %s from bfd %s (Comp: %s). Offset: %d, Count: %d%s%s%s\n",
+			section->name, bfd_get_filename (abfd), Comp->Name, (int) offset, (int) count,
 			Comp->Key?" (Key)":" (No Key)", Comp->Iv?" (Iv)":" (No Iv)", Comp->Nonce?" (Nonce)":" (No Nonce)");
 		if (Trace) DumpKeys(Comp);
 	}
@@ -2748,8 +2750,8 @@ bfd_get_section_contents (bfd *abfd,
 
   if (Comp) {
 	if (EncryptInfo.Verbose) {
-		printf("\tGetting Encrypted section %s from bfd %s. Offset: %d, Count: %d%s%s%s\n",
-			section->name, bfd_get_filename (abfd), (int) offset, (int) count,
+		printf("\tGetting Encrypted section %s from bfd %s (Comp: %s). Offset: %d, Count: %d%s%s%s\n",
+			section->name, bfd_get_filename (abfd), Comp->Name, (int) offset, (int) count,
 			Comp->Key?" (Key)":" (No Key)", Comp->Iv?" (Iv)":" (No Iv)", Comp->Nonce?" (Nonce)":" (No Nonce)");
 		if (Trace) DumpKeys(Comp);
 	}

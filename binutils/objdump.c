@@ -353,6 +353,7 @@ static struct option long_options[]=
   {"dwarf-start",      required_argument, 0, OPTION_DWARF_START},
   {"dwarf-check",      no_argument, 0, OPTION_DWARF_CHECK},
   {"mencrypt-info", required_argument, NULL, OPTION_ENCRYPT},
+  {"-mencrypt-info", required_argument, NULL, OPTION_ENCRYPT},
   {0, no_argument, 0, 0}
 };
 
